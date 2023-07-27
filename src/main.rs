@@ -12,6 +12,7 @@ use iced::{
 };
 
 mod icons;
+mod client;
 
 
 fn main() -> iced::Result {
@@ -20,6 +21,7 @@ fn main() -> iced::Result {
 }
 
 struct Rustmote {
+    state: State,
     menu_width: u16,
     content_data: Vec<ListData>,
 
@@ -28,7 +30,8 @@ struct Rustmote {
 #[derive(Debug, Default, Clone)]
 struct ListData {
     title: String,
-    // on_click: Message::FillContentArea('whatever') likely?
+    // on_click: Message // ::FillContentArea('whatever') likely?
+                         // ::OpenMedia('etc') to send to the back end
 }
 
 impl Application for Rustmote {
@@ -40,6 +43,7 @@ impl Application for Rustmote {
     fn new(_flags: ()) -> (Self, Command<Message>) {
         (
             Self {
+                state: State::Disconnected,
                 menu_width: 150,
                 content_data: Vec::new(),
             },
@@ -62,9 +66,36 @@ impl Application for Rustmote {
                 self.content_data.push(ListData{title: String::from("test 2")});
                 
             } 
-     //       _ => {}
+            Message::ServerStatus(event) => match event {
+                client::Event::Connected(connection) => {
+                    self.state = State::Connected(connection);
+                }
+                client::Event::Disconnected => {
+                    self.state = State::Disconnected;
+                }
+
+                // client::Event::MessageRecieved(msg) => {
+                //     println!("msg: {:?}", msg)
+                // }
+            }
+            Message::KodiReq(command) => {
+                match &mut self.state {
+                    State::Connected(connection) => {
+                        connection.send(command);
+
+                    }
+                    State::Disconnected => {
+                        println!("Kodi is apparently disconnected so I can't");
+                    }
+                }
+
+            }
         }
         Command::none()
+    }
+
+    fn subscription(&self) -> iced::Subscription<Self::Message> {
+        client::connect().map(Message::ServerStatus)
     }
 
     fn view(&self) -> Element<Message> {
@@ -96,6 +127,8 @@ impl Application for Rustmote {
                 // Right (remote)
                 container(
                     column![
+                        button("Test")
+                            .on_press(Message::KodiReq(client::KodiCommand::Test)),
                         button("^"),
                         row![
                             button("<"),
@@ -130,9 +163,16 @@ impl Application for Rustmote {
 #[derive(Debug, Clone)]
 enum Message{
     ToggleLeftMenu,
+    ServerStatus(client::Event),
   //  ToggleRemote,
   //  ToggleNowPlaying,
-    FillContentArea(String) // This will change from String to likely a struct
+    FillContentArea(String), // This will change from String to likely a struct
+    KodiReq(client::KodiCommand), // - KodiCommand being an enum likely
+}
+
+enum State {
+    Disconnected,
+    Connected(client::Connection),
 }
 
 // TODO : Move these somewhere else / to a different file
@@ -238,6 +278,7 @@ ContentArea (center)
 
 // Need to make a generic message type of like:
 //  Message::KodiRqq('GUI.Shownotification', ['one' 'two'])
+// KodiReq is likely going to take an enum of some sort
 // not sure what Type I'll have to use to define that, since it's either Vec, Map, or None
 // Note String by itself is actually not allowed it's just a list of 1 eg. ['volumeup']
 // if I'm lucky the rpc_params! macro actually takes care of this for me

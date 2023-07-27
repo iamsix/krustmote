@@ -6,4 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-iced = "0.9"
+iced = {version = "0.9", features= ['tokio'] }
+serde_json = { version = "1" }
+jsonrpsee = {features = ["ws-client", "macros", "client-ws-transport-native-tls"] }
+tokio = { version = "1.16", features = ["full"] }
