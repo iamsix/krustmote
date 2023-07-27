@@ -1,0 +1,1 @@
+A Kodi remote written in rust using the [iced](https://github.com/iced-rs/iced/) GUI library
