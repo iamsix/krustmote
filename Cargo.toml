@@ -7,6 +7,7 @@ edition = "2021"
 
 [dependencies]
 iced = {version = "0.9", features= ['tokio'] }
+serde = {version = "1"}
 serde_json = { version = "1" }
 jsonrpsee = {features = ["ws-client", "macros", "client-ws-transport-native-tls"] }
 tokio = { version = "1.16", features = ["full"] }

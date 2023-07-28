@@ -3,7 +3,7 @@ use iced::executor;
 use iced::theme::Theme;
 // use iced::time;
 use iced::widget::{
-    button, column, container, row, scrollable
+    button, column, container, row, scrollable, Button
 };
 //use iced::window;
 use iced::{
@@ -23,14 +23,14 @@ fn main() -> iced::Result {
 struct Rustmote {
     state: State,
     menu_width: u16,
-    content_data: Vec<ListData>,
+    file_list: Vec<ListData>,
 
 }
 
-#[derive(Debug, Default, Clone)]
-struct ListData {
+#[derive(Debug, Clone)]
+pub struct ListData {
     title: String,
-    // on_click: Message // ::FillContentArea('whatever') likely?
+    on_click: Message, // ::FillContentArea('whatever') likely?
                          // ::OpenMedia('etc') to send to the back end
 }
 
@@ -45,7 +45,7 @@ impl Application for Rustmote {
             Self {
                 state: State::Disconnected,
                 menu_width: 150,
-                content_data: Vec::new(),
+                file_list: Vec::new(),
             },
             Command::none(),
         )
@@ -61,17 +61,19 @@ impl Application for Rustmote {
                 // TODO : Fancy animation by subtracting until 0 etc. maybe.
                 self.menu_width = if self.menu_width == 0 {150} else {0};
             }
-            Message::FillContentArea(_filldata) => {
-                self.content_data.push(ListData{title: String::from("test 1")});
-                self.content_data.push(ListData{title: String::from("test 2")});
-                
-            } 
+            // Message::ContentAreaFileList{ data } => {
+            //     self.file_list = data;
+
+            // }
             Message::ServerStatus(event) => match event {
                 client::Event::Connected(connection) => {
                     self.state = State::Connected(connection);
                 }
                 client::Event::Disconnected => {
                     self.state = State::Disconnected;
+                }
+                client::Event::UpdateFileList { data } => {
+                    self.file_list = data;
                 }
 
                 // client::Event::MessageRecieved(msg) => {
@@ -104,7 +106,11 @@ impl Application for Rustmote {
             // Top Bar thing
             container(
                 row![
-                    button("=").on_press(Message::ToggleLeftMenu)
+                    button("=").on_press(Message::ToggleLeftMenu),
+                    match self.state {
+                        State::Disconnected => icons::sync_disabled(),
+                        _ => icons::sync()
+                    }
                 ]
             ),
             row![
@@ -113,15 +119,20 @@ impl Application for Rustmote {
 
                 //Center (content)
                 scrollable(
-                    column(self.content_data
+                    column(self.file_list
                         .iter()
-                        .map(|x| x.title.as_str())
+                     //   .map(|x| x.title.as_str())
+                        .map(|x| Button::new(
+                            x.title.as_str()
+                            ).on_press(x.on_click.clone())
+                        )
                         .map(Element::from)
                         .collect()
                     )
                     .spacing(20)
                     .padding(20),
                 )
+                
                 .width(Length::Fill),
 
                 // Right (remote)
@@ -166,9 +177,10 @@ enum Message{
     ServerStatus(client::Event),
   //  ToggleRemote,
   //  ToggleNowPlaying,
-    FillContentArea(String), // This will change from String to likely a struct
+ //   ContentAreaFileList{data: Vec<ListData>}, // This will change from String to likely a struct
     KodiReq(client::KodiCommand), // - KodiCommand being an enum likely
 }
+
 
 enum State {
     Disconnected,
@@ -180,7 +192,11 @@ fn left_menu<'a>(menu_width: u16) -> Element<'a, Message> {
     container(
         column![
             button(row![icons::folder(), "Files"])
-                .on_press(Message::FillContentArea(String::from("Files"))),
+                .on_press(Message::KodiReq(
+                    client::KodiCommand::GetSources(
+                        client::MediaType::Video)
+                    )
+                ),
             button("Settings")
         ]
         

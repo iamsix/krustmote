@@ -9,6 +9,8 @@ const ICONS: Font = Font::External {
 };
 
 pub fn folder<'a>() -> Text<'a> {icon('\u{e2c7}')}
+pub fn sync<'a>() -> Text<'a> {icon('\u{e627}')}
+pub fn sync_disabled<'a>() -> Text<'a> {icon('\u{e628}')}
 
 fn icon(unicode: char) -> Text<'static> {
     text(unicode.to_string())
