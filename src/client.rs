@@ -8,7 +8,7 @@ use jsonrpsee::ws_client::WsClientBuilder;
 use jsonrpsee::rpc_params;
 
 use serde_json::{Map, Value};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 // use tokio::time::Duration;
 
@@ -70,7 +70,8 @@ pub fn connect() -> Subscription<Event> {
 }
 
 // TODO: I'm sure there's a better way to do this...
-async fn handle_connection(client: &mut Client, 
+async fn handle_connection(
+        client: &mut Client, 
         input: &mut Receiver<KodiCommand>, 
         output: &mut Sender<Event>, 
         ) -> Result<(), State> {
@@ -98,55 +99,63 @@ async fn handle_connection(client: &mut Client,
                 KodiCommand::Test => {
                     let response: Result<String, _> = client.request(
                         "GUI.ShowNotification", 
-                        rpc_params!["test", "rust"]
+                        rpc_params!["test", "rust"],
                     ).await;
 
                     if response.is_err() {
                         let _ = output.send(Event::Disconnected).await;
                         return Err(State::Disconnected);
-                    } else {
-                        let res = response.unwrap();
-                        if res != "OK" {
-                            dbg!(res);
-                        };
-                    }
+                    } 
+                    let res = response.unwrap();
+                    if res != "OK" {
+                        dbg!(res);
+                    };
+                    
                 }
-                KodiCommand::GetFileList{path, media_type: mediatype} => {
+                KodiCommand::GetDirectory{path, media_type: mediatype} => {
                     println!("{} {}", path, mediatype.as_str());
                     
                 }
                 KodiCommand::GetSources(mediatype) => {
                     let response: Result<Map<String, Value>, _> = client.request(
                         "Files.GetSources",
-                        rpc_params![mediatype.as_str()]
+                        rpc_params![mediatype.as_str()],
                     ).await;
 
                     if response.is_err() {
                         dbg!(response.err());
                         let _ = output.send(Event::Disconnected).await;
                         return Err(State::Disconnected);
-                    } else {
-                        let res = response.unwrap();
-                        //  dbg![&res];
+                    } 
 
-                        let sources: Vec<Sources> = serde_json::from_str(
-                            &res["sources"].to_string()).unwrap();
-                        // dbg![sources];
-
-                        let mut files: Vec<crate::ListData> = Vec::new();
-                        for source in sources {
-                            files.push(crate::ListData{
-                                title: source.label,
-                                on_click: crate::Message::KodiReq(
-                                    KodiCommand::GetFileList{path: source.file, 
-                                        media_type: MediaType::Video}),
-                            })
-                        }
-
-                        
-                        let _ = output.send(Event::UpdateFileList { data: files } ).await;
-
+                    let res = response.unwrap();
+                    let sources: Vec<Sources> = 
+                        <Vec<Sources> as Deserialize>::deserialize(
+                            &res["sources"]
+                        ).unwrap();
+                    
+                    // TODO: custom deserialize directly in to ListData? undecided.
+                    // Might deserialize to vec<struct>
+                    //  and let the front end figure out the rest.
+                    // This is more important on GetDirectory
+                    //  and especially once I do the movie/tv data back-end.
+                    let mut files: Vec<crate::ListData> = Vec::new();
+                    for source in sources {
+                        files.push(crate::ListData{
+                            label: source.label,
+                            on_click: crate::Message::KodiReq(
+                                KodiCommand::GetDirectory{
+                                    path: source.file, 
+                                    media_type: MediaType::Video,
+                                }
+                            ),
+                        })
                     }
+
+                    
+                    let _ = output.send(Event::UpdateFileList { data: files } ).await;
+
+                
 
                 }
             }
@@ -159,7 +168,8 @@ async fn handle_connection(client: &mut Client,
 
 // TODO: proper serde models for all the useful outputs
 // Likely need a whole file just to contain them
-#[derive(Serialize, Deserialize, Debug)]
+// Almost need a file of various enums/structs/etc anyway...
+#[derive(Deserialize, Debug)]
 struct Sources {
     label: String,
     file: String,
@@ -197,19 +207,21 @@ impl Connection {
 #[derive(Debug, Clone)]
 pub enum KodiCommand {
     Test,
-    GetSources(MediaType),
-
-    //Need to find a good way to do this
-    GetFileList{path: String, media_type: MediaType}, // TODO: SortType
+    GetSources(MediaType), // TODO: SortType
+    GetDirectory{path: String, media_type: MediaType}, // TODO: SortType
 }
 
 #[derive(Debug, Clone, Copy)]
 pub enum MediaType {
     Video,
+   // Music,
+   // Pictures,
+   // Files,
+   // Programs,
 }
 
 impl MediaType {
-    pub fn as_str(&self) -> &str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             MediaType::Video => "video",
         }

@@ -29,7 +29,7 @@ struct Rustmote {
 
 #[derive(Debug, Clone)]
 pub struct ListData {
-    title: String,
+    label: String,
     on_click: Message, // ::FillContentArea('whatever') likely?
                          // ::OpenMedia('etc') to send to the back end
 }
@@ -104,56 +104,17 @@ impl Application for Rustmote {
 
         let content = column! [
             // Top Bar thing
-            container(
-                row![
-                    button("=").on_press(Message::ToggleLeftMenu),
-                    match self.state {
-                        State::Disconnected => icons::sync_disabled(),
-                        _ => icons::sync()
-                    }
-                ]
-            ),
+            top_bar(self),
             row![
                 // Left (menu)
-                left_menu(self.menu_width).explain(Color::from_rgb8(0, 255, 0)),
-
+                left_menu(self).explain(Color::from_rgb8(0, 255, 0)),
                 //Center (content)
-                scrollable(
-                    column(self.file_list
-                        .iter()
-                     //   .map(|x| x.title.as_str())
-                        .map(|x| Button::new(
-                            x.title.as_str()
-                            ).on_press(x.on_click.clone())
-                        )
-                        .map(Element::from)
-                        .collect()
-                    )
-                    .spacing(20)
-                    .padding(20),
-                )
-                
-                .width(Length::Fill),
-
+                center_area(self),
                 // Right (remote)
-                container(
-                    column![
-                        button("Test")
-                            .on_press(Message::KodiReq(client::KodiCommand::Test)),
-                        button("^"),
-                        row![
-                            button("<"),
-                            button("O"),
-                            button(">"),
-                        ],
-                        button("v"),
-                    ]
-                    .padding(10)
-                    .spacing(10),
-                ).width(100),
+                remote(self),
             ],
 
-            // Now playing bar goes here.
+            // TODO: Now playing bar goes here.
 
         ];
         
@@ -175,9 +136,7 @@ impl Application for Rustmote {
 enum Message{
     ToggleLeftMenu,
     ServerStatus(client::Event),
-  //  ToggleRemote,
-  //  ToggleNowPlaying,
- //   ContentAreaFileList{data: Vec<ListData>}, // This will change from String to likely a struct
+
     KodiReq(client::KodiCommand), // - KodiCommand being an enum likely
 }
 
@@ -187,8 +146,41 @@ enum State {
     Connected(client::Connection),
 }
 
-// TODO : Move these somewhere else / to a different file
-fn left_menu<'a>(menu_width: u16) -> Element<'a, Message> {
+// TODO : Move these somewhere else / to a different file/struct/etc
+fn top_bar<'a>(rustmote: &Rustmote) -> Element<'a, Message> {
+    container(
+        row![
+            button("=").on_press(Message::ToggleLeftMenu),
+            match rustmote.state {
+                State::Disconnected => icons::sync_disabled(),
+                _ => icons::sync()
+            }
+        ]
+    )
+    .into()
+}
+
+fn center_area<'a>(rustmote: &'a Rustmote) -> Element<'a, Message> {
+    scrollable(
+        column(
+            rustmote.file_list
+            .iter()
+         //   .map(|x| x.title.as_str())
+            .map(|x| Button::new(
+                x.label.as_str()
+                ).on_press(x.on_click.clone())
+            )
+            .map(Element::from)
+            .collect()
+        )
+        .spacing(20)
+        .padding(20),
+    )
+    .width(Length::Fill)
+    .into()
+}
+
+fn left_menu<'a>(rustmote: &Rustmote) -> Element<'a, Message> {
     container(
         column![
             button(row![icons::folder(), "Files"])
@@ -203,7 +195,26 @@ fn left_menu<'a>(menu_width: u16) -> Element<'a, Message> {
         .spacing(0)
         .padding(10),
     )
-    .max_width(menu_width)
+    .max_width(rustmote.menu_width)
+    .into()
+}
+
+fn remote<'a>(_rustmote: &Rustmote) -> Element<'a, Message> {
+    container(
+        column![
+            button("Test")
+                .on_press(Message::KodiReq(client::KodiCommand::Test)),
+            button("^"),
+            row![
+                button("<"),
+                button("O"),
+                button(">"),
+            ],
+            button("v"),
+        ]
+        .padding(10)
+        .spacing(10),
+    ).width(100)
     .into()
 }
 // END TODO

@@ -8,9 +8,9 @@ const ICONS: Font = Font::External {
     bytes: include_bytes!("../fonts/MaterialIcons-Regular.ttf"),
 };
 
-pub fn folder<'a>() -> Text<'a> {icon('\u{e2c7}')}
-pub fn sync<'a>() -> Text<'a> {icon('\u{e627}')}
-pub fn sync_disabled<'a>() -> Text<'a> {icon('\u{e628}')}
+pub fn folder() -> Text<'static> {icon('\u{e2c7}')}
+pub fn sync() -> Text<'static> {icon('\u{e627}')}
+pub fn sync_disabled() -> Text<'static> {icon('\u{e628}')}
 
 fn icon(unicode: char) -> Text<'static> {
     text(unicode.to_string())
