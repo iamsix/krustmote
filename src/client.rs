@@ -181,7 +181,7 @@ enum State {
     Disconnected,
     Connected(
         Client,
-        mpsc::Receiver<KodiCommand>
+        mpsc::Receiver<KodiCommand>,
     ),
 }
 
@@ -189,7 +189,7 @@ enum State {
 pub enum Event {
     Connected(Connection),
     Disconnected,
-    UpdateFileList{data: Vec<crate::ListData>}
+    UpdateFileList{data: Vec<crate::ListData>},
 //    MessageRecieved(Message),
 }
 
