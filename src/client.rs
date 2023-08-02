@@ -8,7 +8,8 @@ use jsonrpsee::ws_client::WsClientBuilder;
 use jsonrpsee::rpc_params;
 
 use serde_json::{Map, Value};
-use serde::Deserialize;
+use serde::{Serialize, Deserialize};
+use serde;
 
 // use tokio::time::Duration;
 
@@ -16,6 +17,13 @@ use iced::futures::{self, StreamExt};
 use futures::channel::mpsc;
 use futures::sink::SinkExt;
 use iced::subscription::{self, Subscription};
+
+//use tracing_subscriber::util::SubscriberInitExt;
+
+const FILE_PROPS: [&str; 20] = [
+    "title","rating","genre","artist","track","season","episode","year","duration",
+    "album","showtitle","playcount","file","mimetype","size","lastmodified","resume",
+    "art","runtime","displayartist"];
 
 
 pub fn connect() -> Subscription<Event> {
@@ -46,11 +54,10 @@ pub fn connect() -> Subscription<Event> {
 
                                 }
                                 Err(_) => {
-                                    tokio::time::sleep(
-                                        tokio::time::Duration::from_secs(1),
-                                    ).await;
-
                                     let _ = output.send(Event::Disconnected).await;
+                                    tokio::time::sleep(
+                                        tokio::time::Duration::from_secs(5),
+                                    ).await;
                                 }
                             }
                         }
@@ -69,23 +76,31 @@ pub fn connect() -> Subscription<Event> {
 
 }
 
+#[derive(Serialize, Debug)]
+struct DirSort {
+    method: &'static str,
+    order: &'static str,
+}
+
 // TODO: I'm sure there's a better way to do this...
+// Currently assumes any error is a disconnect
 async fn handle_connection(
         client: &mut Client, 
         input: &mut Receiver<KodiCommand>, 
         output: &mut Sender<Event>, 
         ) -> Result<(), State> {
 
-    let mut nh: WsSubscription<Map<String, Value>>  = client
+    let mut on_play: WsSubscription<Map<String, Value>>  = client
         .subscribe_to_method("Player.OnPlay")
         .await.unwrap();
-    let mut fnh = nh.by_ref().fuse();
+    let mut on_play = on_play.by_ref().fuse();
 
     futures::select! {
-        recieved = fnh.select_next_some() => {
+        recieved = on_play.select_next_some() => {
             dbg!(recieved.unwrap());
         }
 
+        // TODO: A future that updates the kodi status every 1sec
 
         message = input.select_next_some() => {
             dbg!(&message);
@@ -113,7 +128,59 @@ async fn handle_connection(
                     
                 }
                 KodiCommand::GetDirectory{path, media_type: mediatype} => {
-                    println!("{} {}", path, mediatype.as_str());
+                    // Episodes, Shows, Files, Movies.. 
+                    // probably going to call a separate thing to build the list here
+                    let response: Result<Map<String, Value>, _> = client.request(
+                        "Files.GetDirectory",
+                        rpc_params![
+                            path, 
+                            mediatype.as_str(), 
+                            FILE_PROPS,
+                            DirSort{method:"date",order:"descending"} // TODO: SortType
+                            ],
+                        
+                    ).await;
+
+                    if response.is_err() {
+                        dbg!(response.err());
+                        let _ = output.send(Event::Disconnected).await;
+                        return Err(State::Disconnected);
+                    }
+
+                    let res = response.unwrap();
+               //     dbg!(res);
+                    let list = <Vec<DirList> as Deserialize>::deserialize(
+                            &res["files"]
+                        ).unwrap();
+
+                    let mut files: Vec<crate::ListData> = Vec::new();
+                    for file in list {
+
+                        files.push(crate::ListData{
+                            label: file.label,
+                            on_click: crate::Message::KodiReq(
+                                match file.filetype.as_str() {
+                                    "directory" =>  KodiCommand::GetDirectory{
+                                        path: file.file, 
+                                        media_type: MediaType::Video,
+                                    },
+                                    "file" => {
+                                        KodiCommand::PlayerOpen(file.file)
+                                    },
+                                    _ => panic!("Impossible kodi filetype {}", file.filetype),
+                                }  
+                            ),
+                            bottom_right: Some(file.lastmodified),
+                            bottom_left: if file.size > 1_073_741_824 {
+                                    Some(format!("{:.2} GB", (file.size as f64/1024.0/1024.0/1024.0)))
+                            } else {
+                                    Some(format!("{:.1} MB", (file.size as f64/1024.0/1024.0)))
+                            },
+                            
+                        })
+                    }
+                    let _ = output.send(Event::UpdateFileList { data: files } ).await;
+
                     
                 }
                 KodiCommand::GetSources(mediatype) => {
@@ -140,6 +207,18 @@ async fn handle_connection(
                     // This is more important on GetDirectory
                     //  and especially once I do the movie/tv data back-end.
                     let mut files: Vec<crate::ListData> = Vec::new();
+                    files.push(crate::ListData{
+                        label: String::from("- Database"), 
+                        on_click: crate::Message::KodiReq(
+                            KodiCommand::GetDirectory{
+                                path: String::from("videoDB://"),
+                                media_type: MediaType::Video,
+                            }
+                        ),
+                        bottom_right: None,
+                        bottom_left: None,
+                        
+                    });
                     for source in sources {
                         files.push(crate::ListData{
                             label: source.label,
@@ -149,6 +228,8 @@ async fn handle_connection(
                                     media_type: MediaType::Video,
                                 }
                             ),
+                            bottom_right: None,
+                            bottom_left: None,
                         })
                     }
 
@@ -158,11 +239,34 @@ async fn handle_connection(
                 
 
                 }
+                KodiCommand::PlayerOpen(file) => {
+
+                    #[derive(Serialize)]
+                    struct Item{ file : String }
+                    let objitem = Item{file: file};
+                    let mut params = jsonrpsee::core::params::ObjectParams::new();
+                    let _ = params.insert("item", objitem);
+
+                    // {"jsonrpc":"2.0","id":"1","method":"Player.Open","params":{"item":{"file":"Media/Big_Buck_Bunny_1080p.mov"}}}
+                    let response: Result<Map<String, Value>, _> = client.request(
+                        "Player.Open",
+                        params,
+                    ).await;
+
+                    if response.is_err() {
+                        dbg!(response.err());
+                        let _ = output.send(Event::Disconnected).await;
+                        return Err(State::Disconnected);
+                    }
+                    let res = response.unwrap();
+                    dbg!(res);
+                }
             }
         }
     }
     Ok(())
 }
+
 
 
 
@@ -173,6 +277,18 @@ async fn handle_connection(
 struct Sources {
     label: String,
     file: String,
+}
+
+// TODO: This will need to be much more extensive
+//       in order to cover episode 'files' and movie 'files' etc.
+//       For now I'm treating everyhing as a directory or file.
+#[derive(Deserialize, Debug)]
+struct DirList {
+    file: String,
+    filetype: String,
+    label: String,
+    lastmodified: String,
+    size: u64,
 }
 
 
@@ -209,6 +325,18 @@ pub enum KodiCommand {
     Test,
     GetSources(MediaType), // TODO: SortType
     GetDirectory{path: String, media_type: MediaType}, // TODO: SortType
+    PlayerOpen(String),
+    // InputButtonEvent{button: String, keymap: String},
+    // InputExecuteAction(String),
+    // ToggleMute,
+    // PlayerPlayPause,
+    // PlayerStop,
+    // GUIActivateWindow(String),
+
+    // Not sure if I actually need these ones from the front end. (they're used by back end)
+    // PlayerGetProperties, // Possibly some variant of this one to get subs/audio/video
+    // PlayerGetItem,
+    // PlayerGetActivePlayers, 
 }
 
 #[derive(Debug, Clone, Copy)]

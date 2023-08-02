@@ -38,8 +38,6 @@ fn icon(unicode: char) -> Text<'static> {
     
     text(unicode.to_string())
         .font(ICONS)
-    //    .width(20) // Width vs size??
         .horizontal_alignment(alignment::Horizontal::Center)
         .vertical_alignment(alignment::Vertical::Center)
-     //   .size(20) // Not sure this should be here.
-}
+  }

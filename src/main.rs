@@ -17,7 +17,7 @@ mod client;
 
 
 fn main() -> iced::Result {
-    println!("Hello, world!");
+   // println!("Hello, world!");
     Rustmote::run(Settings::default())
 }
 
@@ -32,6 +32,10 @@ struct Rustmote {
 pub struct ListData {
     label: String,
     on_click: Message, 
+    // content_area: Option<String>, // container/element instead?
+    bottom_left: Option<String>,
+    bottom_right: Option<String>,
+    // picture: ???? - not sure if URL or actual image data
 }
 
 impl Application for Rustmote {
@@ -159,23 +163,59 @@ fn top_bar<'a>(rustmote: &Rustmote) -> Element<'a, Message> {
 }
 
 fn center_area<'a>(rustmote: &'a Rustmote) -> Element<'a, Message> {
+    // hopefully thousands of 'buttons' in a list doesn't cause any problems...
+    // look in to Lazy and virtual list
     scrollable(
         column(
             rustmote.file_list
             .iter()
-         //   .map(|x| x.title.as_str())
-            .map(|x| Button::new(
-                x.label.as_str()
-                ).on_press(x.on_click.clone())
-            )
+            .map(make_listitem)
             .map(Element::from)
             .collect()
         )
-        .spacing(20)
+        .spacing(1)
         .padding(20),
     )
     .width(Length::Fill)
     .into()
+}
+
+fn make_listitem(data: &ListData) -> Button<Message> {
+    // Let's stretch the definition of a 'button'
+    // ___________________________________________________________
+    // | picture |  Main Label Information                       |
+    // | picture |  (smaller text) content (genre, runtime, etc) |
+    // | picture |  bottom left                     bottom right |
+    // -----------------------------------------------------------
+    //
+    // row![ picture, column! [ label, 
+    //                          content, 
+    //                          row! [bottom_left, space, bottom_right],
+    //                         ]
+    //     ]
+    // It seems pretty clear I'll have to make some kind of custom
+    //    RecyclerView type thing.
+    //    The button captures any attempt to touch-scroll.
+    //    and there's no 'fling' anyway
+    Button::new(
+        column![
+            data.label.as_str(),
+            row![
+                match &data.bottom_left {
+                        Some(d) => d.as_str(),
+                        None => "",
+                },
+                Space::new(Length::Fill, Length::Shrink),
+                match &data.bottom_right {
+                    Some(d) => d.as_str(),
+                    None => "",
+                },
+            ]
+        ]
+    ).on_press(
+        data.on_click.clone()
+    )
+    .width(Length::Fill)
 }
 
 fn left_menu<'a>(rustmote: &Rustmote) -> Element<'a, Message> {
@@ -189,8 +229,7 @@ fn left_menu<'a>(rustmote: &Rustmote) -> Element<'a, Message> {
                 ),
             button("Settings")
         ]
-        
-        .spacing(0)
+        .spacing(1)
         .padding(10),
     )
     .max_width(rustmote.menu_width)
@@ -202,7 +241,11 @@ fn remote<'a>(_rustmote: &Rustmote) -> Element<'a, Message> {
         column![
             button(icons::bug_report())
                 .on_press(Message::KodiReq(client::KodiCommand::Test)),
-            button(icons::expand_less().size(48)).width(65).height(65), // center this
+            row![
+                // Might add pgup/pgdn buttons on either side here.
+                Space::new(65, 65),    
+                button(icons::expand_less().size(48)).width(65).height(65), // center this
+            ].spacing(5),
             row![
                 button(icons::chevron_left().size(48)).width(65).height(65),
                 button(icons::circle().size(48)).width(65).height(65),
