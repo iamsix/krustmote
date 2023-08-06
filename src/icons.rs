@@ -33,6 +33,11 @@ pub fn expand_more() -> Text<'static> {icon('\u{e5cf}')}
 pub fn circle() -> Text<'static> {icon('\u{ef4a}')}
 pub fn arrow_back() -> Text<'static> {icon('\u{e5c4}')}
 
+pub fn done() -> Text<'static> {icon('\u{e876}')}
+
+pub fn pause_clircle_filled() -> Text<'static> {icon('\u{e035}')}
+pub fn play_circle_filled() -> Text<'static> {icon('\u{e038}')}
+
 fn icon(unicode: char) -> Text<'static> {
     
     
@@ -40,4 +45,5 @@ fn icon(unicode: char) -> Text<'static> {
         .font(ICONS)
         .horizontal_alignment(alignment::Horizontal::Center)
         .vertical_alignment(alignment::Vertical::Center)
+        .line_height(1.0)
   }
