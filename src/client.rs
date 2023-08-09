@@ -15,6 +15,20 @@ use tokio::time::{Duration,interval};
 use tokio_stream::StreamMap;
 use tokio::select;
 
+use crate::koditypes::*;
+
+// TODO: muncher to allow nesting?
+macro_rules! rpc_obj_params {
+    ($($name:literal=$value:expr),*) => {{
+        let mut params = ObjectParams::new();
+        $(
+            if let Err(err) = params.insert($name, $value) {
+                panic!("Parameter `{}={}` cannot be serialized: {:?}", $name, stringify!($value), err);
+            }
+        )*
+        params
+    }};
+}
 
 const FILE_PROPS: [&'static str; 20] = [
     "title","rating","genre","artist","track","season","episode","year","duration",
@@ -55,7 +69,9 @@ pub fn connect() -> Subscription<Event> {
             let mut state = State::Disconnected;
 
             let mut poller = interval(Duration::from_secs(1));
-            let mut notifications: StreamMap<&str, WsSubscription<Value>> = StreamMap::new();
+            let mut notifications: StreamMap<&str, WsSubscription<Value>> = 
+                StreamMap::new();
+
             loop {
                 match &mut state {
                     State::Disconnected => {
@@ -97,13 +113,20 @@ pub fn connect() -> Subscription<Event> {
                             
                     
                             _ = poller.tick() => {
-                                println!("Tick");
+                                // println!("Tick");
                                 let app_status = poll_kodi_application_status(client).await;
                                 let app_status = app_status.unwrap_or(Event::None);
-                                let _ = output.send(app_status).await;
+                                if matches!(&app_status, &Event::Disconnected) {
+                                    state = State::Disconnected;
+                                    continue;
+                                } else {
+                                    let _ = output.send(app_status).await;
+                                }
                     
                                 let player_props = poll_kodi_player_status(client).await;
-                                let player_props = player_props.unwrap_or(Event::UpdatePlayerProps(None));
+                                let player_props = player_props.unwrap_or(
+                                    Event::UpdatePlayerProps(None)
+                                );
                                 if matches!(&player_props, &Event::Disconnected) {
                                     state = State::Disconnected;
                                 } else {
@@ -135,7 +158,6 @@ pub fn connect() -> Subscription<Event> {
 
 async fn poll_kodi_application_status (
     client: &mut Client,
-//    output: &mut Sender<Event>,
 ) -> Option<Event> {
     let mut params = ObjectParams::new();
     let _ = params.insert("properties", ["volume", "muted"]);
@@ -157,7 +179,6 @@ async fn poll_kodi_application_status (
 
 async fn poll_kodi_player_status (
     client: &mut Client,
-//    output: &mut Sender<Event>,
 ) -> Option<Event> {
     let response: Result<Value, _> = client.request(
         "Player.GetActivePlayers",
@@ -197,6 +218,7 @@ async fn handle_kodi_command(
     message: KodiCommand, 
     client: &mut Client
 ) -> Option<Event> {
+
     match message {
         // TODO: likely make a generic "OKcommand" structure
         //   that uses the match to determine what "RPC.method", [params]
@@ -244,44 +266,7 @@ async fn handle_kodi_command(
 
             // TODO: Give the fornt end that Vec<DirList> Directly so it can handle it.
 
-            let mut files: Vec<crate::ListData> = Vec::new();
-            for file in list {
-                // dbg!(&file);
-                let label = if file.type_.eq_ignore_ascii_case("episode") {
-                    format!("{} - {}", file.showtitle.unwrap(), file.label)
-                } else {
-                    file.label
-                };
-
-                files.push(crate::ListData{
-                    label: label,
-                    on_click: crate::Message::KodiReq(
-                        match file.filetype.as_str() {
-                            "directory" =>  KodiCommand::GetDirectory{
-                                path: file.file, 
-                                media_type: MediaType::Video,
-                            },
-                            "file" => {
-                                KodiCommand::PlayerOpen(file.file)
-                            },
-                            _ => panic!("Impossible kodi filetype {}", file.filetype),
-                        }  
-                    ),
-                    play_count: file.playcount,
-                    bottom_right: Some(file.lastmodified),
-                    /// Should the front end be doing this?
-                    /// if it does though it would need to know WHAT conent it is
-                    bottom_left: if file.size > 1_073_741_824 {
-                            Some(format!("{:.2} GB", (file.size as f64/1024.0/1024.0/1024.0)))
-                        } else if file.size > 0 {
-                            Some(format!("{:.1} MB", (file.size as f64/1024.0/1024.0)))
-                        } else {
-                            None
-                        },
-                    
-                })
-            }
-            return Some(Event::UpdateFileList { data: files });
+            return Some(Event::UpdateDirList(list));
 
             
         }
@@ -302,51 +287,18 @@ async fn handle_kodi_command(
                     &res["sources"]
                 ).unwrap();
             
-            // TODO: Give the front end the above Vec<Sources> directly so it can handle it
-            let mut files: Vec<crate::ListData> = Vec::new();
-            files.push(crate::ListData{
-                label: String::from("- Database"), 
-                on_click: crate::Message::KodiReq(
-                    KodiCommand::GetDirectory{
-                        path: String::from("videoDB://"),
-                        media_type: MediaType::Video,
-                    }
-                ),
-                play_count: None,
-                bottom_right: None,
-                bottom_left: None,
-                
-            });
-            for source in sources {
-                files.push(crate::ListData{
-                    label: source.label,
-                    on_click: crate::Message::KodiReq(
-                        KodiCommand::GetDirectory{
-                            path: source.file, 
-                            media_type: MediaType::Video,
-                        }
-                    ),
-                    play_count: None,
-                    bottom_right: None,
-                    bottom_left: None,
-                })
-            }
-            Some(Event::UpdateFileList { data: files } )
+            Some(Event::UpdateSources(sources) )
 
         }
 
         KodiCommand::PlayerOpen(file) => {
-
             #[derive(Serialize)]
             struct Item{ file : String }
-            let objitem = Item{file: file};
-            let mut params = ObjectParams::new();
-            let _ = params.insert("item", objitem);
+            let objitem = Item{file};
 
-            // {"jsonrpc":"2.0","id":"1","method":"Player.Open","params":{"item":{"file":"Media/Big_Buck_Bunny_1080p.mov"}}}
             let response: Result<String, _> = client.request(
                 "Player.Open",
-                params,
+                rpc_obj_params!{"item"=objitem},
             ).await;
 
             if response.is_err() {
@@ -357,12 +309,9 @@ async fn handle_kodi_command(
         }
 
         KodiCommand::InputButtonEvent{button, keymap} => {
-            let mut params = ObjectParams::new();
-            let _ = params.insert("button", button);
-            let _ = params.insert("keymap", keymap);
             let response: Result<String, _> = client.request(
                 "Input.ButtonEvent",
-                params,
+                rpc_obj_params!{"button"=button, "keymap"=keymap},
             ).await;
 
             if response.is_err() {
@@ -401,13 +350,9 @@ async fn handle_kodi_command(
 
         // Debug command
         KodiCommand::PlayerGetProperties => {
-            let mut params = ObjectParams::new();
-            let _ = params.insert("playerid", 0);
-            let _ = params.insert("properties", PLAYER_PROPS);
-
             let response: Result<Map<String, Value>, _> = client.request(
                 "Player.GetProperties",
-                params,
+                rpc_obj_params!{"playerid"=0, "properties"=PLAYER_PROPS},
             ).await;
             if response.is_err() {
                 dbg!(response.err());
@@ -418,13 +363,9 @@ async fn handle_kodi_command(
         }
 
         KodiCommand::PlayerGetPlayingItem => {
-            let mut params = ObjectParams::new();
-            let _ = params.insert("playerid", 0);
-            let _ = params.insert("properties", PLAYING_ITEM_PROPS);
-
             let response: Result<Map<String, Value>, _> = client.request(
                 "Player.GetItem",
-                params,
+                rpc_obj_params!{"playerid"=0, "properties"=PLAYING_ITEM_PROPS},
             ).await;
             if response.is_err() {
                 dbg!(response.err());
@@ -435,88 +376,6 @@ async fn handle_kodi_command(
         }
     }
   //  None
-}
-
-
-#[derive(Deserialize, Clone, Debug)]
-pub struct PlayerProps {
-    pub speed: f64,
-    pub time: KodiTime,
-    pub totaltime: KodiTime,
-    // currentaudiostream: AudioStream,
-    // audiostreams: Vec[AudioStream],
-    // canseek: bool,
-    // currentsubtitle: Subtitle,
-    // subtitles: Vec[Subtitles]
-    // currentvideostream: VideoStream,
-    // videostreams: Vec[VideoStream],
-    // playlistid: u8,
-    // position: u8,
-    // repeat: String //(could be enum?)
-    // shuffled: bool,
-    // subtitleenabled: bool,
-    // type_: MediaType // need impl fromstring
-
-}
-
-
-#[derive(Deserialize, Clone, Debug, Default)]
-pub struct KodiTime {
-    pub hours: u8,
-    // this SHOULD be a u16
-    // docs say the max of `milliseconds` is 999 and min is 0
-    // but I once got a return of -166 on this somehow
-    pub milliseconds: i16,
-    pub minutes: u8,
-    pub seconds: u8,
-}
-
-impl std::fmt::Display for KodiTime {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{:02}:{:02}:{:02}", self.hours, self.minutes, self.seconds)
-    }
-}
-
-
-
-#[derive(Deserialize, Debug)]
-struct ActivePlayer {
-    playerid: u8,
-  //  playertype: String,
-  //  type_: MediaType //need to impl 'from' string on that.
-}
-
-
-// TODO: proper serde models for all the useful outputs
-// Likely need a whole file just to contain them
-// Almost need a file of various enums/structs/etc anyway...
-#[derive(Deserialize, Debug)]
-struct Sources {
-    label: String,
-    file: String,
-}
-
-
-#[derive(Serialize, Debug)]
-struct DirSort {
-    method: &'static str,
-    order: &'static str,
-}
-
-// TODO: This will need to be much more extensive
-//       in order to cover episode 'files' and movie 'files' etc.
-//       For now I'm treating everyhing as a generic directory or file.
-#[derive(Deserialize, Debug)]
-struct DirList {
-    file: String,
-    filetype: String,
-    label: String,
-    showtitle: Option<String>,
-    lastmodified: String,
-    size: u64,
-    playcount: Option<u16>,
-    #[serde(rename = "type")]
-    type_: String, // Should be enum from string
 }
 
 
@@ -534,52 +393,8 @@ pub enum Event {
     Connected(Connection),
     Disconnected,
     None,
-    UpdateFileList{data: Vec<crate::ListData>},
+    UpdateSources(Vec<Sources>),
+    UpdateDirList(Vec<DirList>),
     UpdatePlayerProps(Option<PlayerProps>),
     UpdateKodiAppStatus(KodiAppStatus)
-}
-
-#[derive(Deserialize, Debug, Clone)]
-pub struct KodiAppStatus {
-    pub muted: bool,
-    //volume: u8,
-}
-
-
-
-#[derive(Debug, Clone)]
-pub enum KodiCommand {
-    Test,
-    GetSources(MediaType), // TODO: SortType
-    GetDirectory{path: String, media_type: MediaType}, // TODO: SortType
-    PlayerOpen(String),
-    InputButtonEvent{button: &'static str, keymap: &'static str},
-    InputExecuteAction(&'static str),
-    // ToggleMute,
-    // PlayerPlayPause,
-    // PlayerStop,
-    // GUIActivateWindow(String),
-
-    // Not sure if I actually need these ones from the front end. (they're used by back end)
-     PlayerGetProperties, // Possibly some variant of this one to get subs/audio/video
-     PlayerGetPlayingItem,
-     PlayerGetActivePlayers, 
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum MediaType {
-    Video,
-   // Music,
-   // Pictures,
-   // Files,
-   // Programs,
-}
-
-impl MediaType {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            MediaType::Video => "video",
-        }
-
-    }
 }
