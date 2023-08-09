@@ -11,3 +11,4 @@ serde = {version = "1"}
 serde_json = { version = "1" }
 jsonrpsee = {version = "0.19", features = ["ws-client", "macros", "client-ws-transport-native-tls"] }
 tokio = { version = "1.16", features = ["full"] }
+tokio-stream = "0.1"

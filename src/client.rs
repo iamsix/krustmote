@@ -1,41 +1,49 @@
-//use std::sync::mpsc::{Receiver, Sender};
-
-use iced::futures::channel::mpsc::{Receiver, Sender};
 use jsonrpsee::core::client::{Client, ClientT, SubscriptionClientT, 
-                             Subscription as WsSubscription
-                            };
+                             Subscription as WsSubscription};
 use jsonrpsee::ws_client::WsClientBuilder;
 use jsonrpsee::rpc_params;
 use jsonrpsee::core::params::ObjectParams;
 
 use serde_json::{Map, Value};
 use serde::{Serialize, Deserialize};
-use serde;
 
-
-use iced::futures::{self, Future, Stream, StreamExt};
-use iced::futures::task::{Poll, Context};
-use core::pin::Pin;
-use futures::channel::mpsc;
-use futures::sink::SinkExt;
+use iced::futures::channel::mpsc::{channel, Receiver, Sender};
+use iced::futures::{StreamExt, SinkExt};
 use iced::subscription::{self, Subscription};
 
-use tokio::time::{self, Duration, Instant};
+use tokio::time::{Duration,interval};
+use tokio_stream::StreamMap;
+use tokio::select;
 
 
-const FILE_PROPS: [&str; 20] = [
+const FILE_PROPS: [&'static str; 20] = [
     "title","rating","genre","artist","track","season","episode","year","duration",
     "album","showtitle","playcount","file","mimetype","size","lastmodified","resume",
     "art","runtime","displayartist"];
 
-const PLAYER_PROPS: [&str; 17] = [
+const PLAYER_PROPS: [&'static str; 17] = [
     "audiostreams","canseek","currentaudiostream","currentsubtitle","partymode",
     "playlistid","position","repeat","shuffled","speed","subtitleenabled","subtitles",
     "time","totaltime","type","videostreams","currentvideostream"];
 
+const PLAYING_ITEM_PROPS: [&'static str; 28]= [
+    "album","albumartist","artist","episode","art","file","genre","plot","rating",
+    "season","showtitle","studio","tagline","title","track","year","streamdetails",
+    "originaltitle","playcount","runtime","duration","cast","writer","director",
+    "userrating","firstaired","displayartist","uniqueid"];
 
 
 
+#[derive(Debug, Clone)]
+pub struct Connection(Sender<KodiCommand>);
+
+impl Connection {
+    pub fn send(&mut self, message: KodiCommand) {
+        self.0
+            .try_send(message)
+            .expect("Send command to Kodi server");
+    }
+}
 
 pub fn connect() -> Subscription<Event> {
     struct Connect;
@@ -46,100 +54,82 @@ pub fn connect() -> Subscription<Event> {
         |mut output| async move {
             let mut state = State::Disconnected;
 
+            let mut poller = interval(Duration::from_secs(1));
+            let mut notifications: StreamMap<&str, WsSubscription<Value>> = StreamMap::new();
             loop {
                 match &mut state {
                     State::Disconnected => {
                         const SERVER: &str = "ws://192.168.1.22:9090";
-
-                        match WsClientBuilder::default()
-                            .build(SERVER).await
-                            {
+                        match WsClientBuilder::default().build(SERVER).await{
                                 Ok(client) => {
-                                    let (sender, reciever) = mpsc::channel(100);
-
+                                    let (sender, reciever) = channel(100);
                                     let _ = output.send(
                                         Event::Connected(Connection(sender))
                                     ).await;
 
-                                    state = State::Connected(client, reciever);
+                                    let on_play: WsSubscription<Value>  = client
+                                        .subscribe_to_method("Player.OnPlay")
+                                        .await
+                                        .unwrap();
+                                    notifications.insert("OnPlay", on_play);
 
+                                    state = State::Connected(client, reciever);
                                 }
-                                Err(_) => {
+                                Err(err) => {
+                                    dbg!(err);
                                     let _ = output.send(Event::Disconnected).await;
                                     tokio::time::sleep(
-                                        tokio::time::Duration::from_secs(5),
+                                        Duration::from_secs(5),
                                     ).await;
                                 }
                             }
                         }
                     
                     State::Connected(client, input) => {
-                        let res = handle_connection(client, input, &mut output).await;
-                        if res.is_err() {
-                            state = res.unwrap_err();
+
+                        select! {
+                               recieved = notifications.next() => {
+                                // do Player.GetItem here?
+                                    let (func, data) = recieved.unwrap();
+                                    dbg!(func);
+                                    dbg!(data.unwrap());
+                                }
+                            
+                    
+                            _ = poller.tick() => {
+                                println!("Tick");
+                                let app_status = poll_kodi_application_status(client).await;
+                                let app_status = app_status.unwrap_or(Event::None);
+                                let _ = output.send(app_status).await;
+                    
+                                let player_props = poll_kodi_player_status(client).await;
+                                let player_props = player_props.unwrap_or(Event::UpdatePlayerProps(None));
+                                if matches!(&player_props, &Event::Disconnected) {
+                                    state = State::Disconnected;
+                                } else {
+                                    let _ = output.send(player_props).await;
+                                }
+                            }
+                    
+                            message = input.select_next_some() => {
+                                dbg!(&message);
+                                let result = handle_kodi_command(message, client).await;
+                                let result = result.unwrap_or(Event::None);
+                                if matches!(&result, &Event::Disconnected) {
+                                    state = State::Disconnected;
+                                } else {
+                                    let _ = output.send(result).await;
+                                }
+                            }
                         }
                         
                     }
-             
+            
                 }
             }
         }
     )
 
-}
-
-
-// TODO: I'm sure there's a better way to do this...
-// Currently assumes any error is a disconnect.
-// It SHOULD look at the actual error since it could return others (ie parse errors etc)
-
-// This should probably return an Option instead?
-async fn handle_connection(
-        client: &mut Client, 
-        input: &mut Receiver<KodiCommand>, 
-        output: &mut Sender<Event>, 
-        ) -> Result<(), State> {
-
-    let mut on_play: WsSubscription<Map<String, Value>>  = client
-        .subscribe_to_method("Player.OnPlay")
-        .await
-        .unwrap();
-    let mut on_play = on_play.by_ref().fuse();
-
-   let poller = Every::new(1);
-   let mut poller = poller.fuse();
-
-    futures::select! {
-        recieved = on_play.select_next_some() => {
-            // Player.GetItem
-            dbg!(recieved.unwrap());
-        }
-
-        _ = poller.select_next_some() => {
-            let app_status = poll_kodi_application_status(client).await;
-            let app_status = app_status.unwrap_or(Event::None);
-            let _ = output.send(app_status).await;
-
-            let player_props = poll_kodi_player_status(client).await;
-            let player_props = player_props.unwrap_or(Event::UpdatePlayerProps(None));
-            if matches!(&player_props, &Event::Disconnected) {
-                return Err(State::Disconnected);
-            }
-            let _ = output.send(player_props).await;
-        }
-
-        message = input.select_next_some() => {
-            dbg!(&message);
-            let result = handle_kodi_command(message, client).await;
-            let result = result.unwrap_or(Event::None);
-            if matches!(&result, &Event::Disconnected) {
-                return Err(State::Disconnected);
-            }
-            let _ = output.send(result).await;
-            
-        }
-    }
-    Ok(())
 }
 
 
@@ -203,49 +193,6 @@ async fn poll_kodi_player_status (
     Some(Event::UpdatePlayerProps(Some(playerprops)))
 }
 
-// // This seems like a hack but is also the 'cleanest' way I could think to do this
-struct Every {
-    sleep: Pin<Box<time::Sleep>>,
-    delay: u64,
-}
-
-impl Every {
-    fn new(seconds: u64) -> Self {
-        Self {
-            delay: seconds,
-            sleep: Box::pin(time::sleep(Duration::from_secs(seconds)))
-        }
-    }
-}
-
-impl Future for Every {
-    type Output = ();
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-        self.sleep.as_mut().poll(cx)
-    }
-}
-
-impl Stream for Every {
-    // Type doesn't actually matter, just had to be something
-    type Item = ();
-    fn poll_next(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>
-    ) -> Poll<Option<()>> {
-        match self.sleep.as_mut().poll(cx) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(_) => {
-                let delay = self.delay;
-                self.sleep.as_mut().reset(
-                    Instant::now() + Duration::from_secs(delay)
-                );
-                Poll::Ready(Some(()))
-            }
-        }
-    }
-}
-
-
 async fn handle_kodi_command(
     message: KodiCommand, 
     client: &mut Client
@@ -255,8 +202,8 @@ async fn handle_kodi_command(
         //   that uses the match to determine what "RPC.method", [params]
         //   then just use the same 'request' function and response 
         //   for all of the buttons/etc that just return "OK"
-        //  
-        // there are some special ones that actually have output
+        //
+        // I could just fire and forget but I want to handle an error if any.
         KodiCommand::Test => {
             let response: Result<String, _> = client.request(
                 "GUI.ShowNotification", 
@@ -264,13 +211,9 @@ async fn handle_kodi_command(
             ).await;
 
             if response.is_err() {
-               //  let _ = output.send(Event::Disconnected).await;
+                dbg!(response.err());
                 return Some(Event::Disconnected);
-            } 
-            let res = response.unwrap();
-            if res != "OK" {
-                dbg!(res);
-            };
+            }
             None
             
         }
@@ -299,12 +242,19 @@ async fn handle_kodi_command(
                     &res["files"]
                 ).unwrap();
 
+            // TODO: Give the fornt end that Vec<DirList> Directly so it can handle it.
+
             let mut files: Vec<crate::ListData> = Vec::new();
             for file in list {
                 // dbg!(&file);
+                let label = if file.type_.eq_ignore_ascii_case("episode") {
+                    format!("{} - {}", file.showtitle.unwrap(), file.label)
+                } else {
+                    file.label
+                };
 
                 files.push(crate::ListData{
-                    label: file.label,
+                    label: label,
                     on_click: crate::Message::KodiReq(
                         match file.filetype.as_str() {
                             "directory" =>  KodiCommand::GetDirectory{
@@ -352,11 +302,7 @@ async fn handle_kodi_command(
                     &res["sources"]
                 ).unwrap();
             
-            // TODO: custom deserialize directly in to ListData? undecided.
-            // Might deserialize to vec<struct>
-            //  and let the front end figure out the rest.
-            // This is more important on GetDirectory
-            //  and especially once I do the movie/tv data back-end.
+            // TODO: Give the front end the above Vec<Sources> directly so it can handle it
             let mut files: Vec<crate::ListData> = Vec::new();
             files.push(crate::ListData{
                 label: String::from("- Database"), 
@@ -389,7 +335,6 @@ async fn handle_kodi_command(
 
         }
 
-        // Probably OK Command
         KodiCommand::PlayerOpen(file) => {
 
             #[derive(Serialize)]
@@ -408,12 +353,9 @@ async fn handle_kodi_command(
                 dbg!(response.err());
                 return Some(Event::Disconnected);
             }
-            let res = response.unwrap();
-            dbg!(res);
             None
         }
 
-        // Probably OK Command
         KodiCommand::InputButtonEvent{button, keymap} => {
             let mut params = ObjectParams::new();
             let _ = params.insert("button", button);
@@ -427,8 +369,6 @@ async fn handle_kodi_command(
                 dbg!(response.err());
                 return Some(Event::Disconnected);
             }
-            let res = response.unwrap();
-            dbg!(res);
             None
         }
 
@@ -442,11 +382,10 @@ async fn handle_kodi_command(
                 dbg!(response.err());
                 return Some(Event::Disconnected);
             }
-            let res = response.unwrap();
-            dbg!(res);
             None
         }
 
+        // Debug command
         KodiCommand::PlayerGetActivePlayers => {
             let response: Result<Value, _> = client.request(
                 "Player.GetActivePlayers",
@@ -460,13 +399,31 @@ async fn handle_kodi_command(
             None
         }
 
+        // Debug command
         KodiCommand::PlayerGetProperties => {
             let mut params = ObjectParams::new();
-            let _ = params.insert("playerid", 1);
+            let _ = params.insert("playerid", 0);
             let _ = params.insert("properties", PLAYER_PROPS);
 
             let response: Result<Map<String, Value>, _> = client.request(
                 "Player.GetProperties",
+                params,
+            ).await;
+            if response.is_err() {
+                dbg!(response.err());
+            } else {
+                dbg!(response.unwrap());
+            }
+            None
+        }
+
+        KodiCommand::PlayerGetPlayingItem => {
+            let mut params = ObjectParams::new();
+            let _ = params.insert("playerid", 0);
+            let _ = params.insert("properties", PLAYING_ITEM_PROPS);
+
+            let response: Result<Map<String, Value>, _> = client.request(
+                "Player.GetItem",
                 params,
             ).await;
             if response.is_err() {
@@ -506,6 +463,9 @@ pub struct PlayerProps {
 #[derive(Deserialize, Clone, Debug, Default)]
 pub struct KodiTime {
     pub hours: u8,
+    // this SHOULD be a u16
+    // docs say the max of `milliseconds` is 999 and min is 0
+    // but I once got a return of -166 on this somehow
     pub milliseconds: i16,
     pub minutes: u8,
     pub seconds: u8,
@@ -551,9 +511,12 @@ struct DirList {
     file: String,
     filetype: String,
     label: String,
+    showtitle: Option<String>,
     lastmodified: String,
     size: u64,
     playcount: Option<u16>,
+    #[serde(rename = "type")]
+    type_: String, // Should be enum from string
 }
 
 
@@ -562,7 +525,7 @@ enum State {
     Disconnected,
     Connected(
         Client,
-        mpsc::Receiver<KodiCommand>,
+        Receiver<KodiCommand>,
     ),
 }
 
@@ -582,16 +545,7 @@ pub struct KodiAppStatus {
     //volume: u8,
 }
 
-#[derive(Debug, Clone)]
-pub struct Connection(mpsc::Sender<KodiCommand>);
 
-impl Connection {
-    pub fn send(&mut self, message: KodiCommand) {
-        self.0
-            .try_send(message)
-            .expect("Send command to Kodi server");
-    }
-}
 
 #[derive(Debug, Clone)]
 pub enum KodiCommand {
@@ -608,7 +562,7 @@ pub enum KodiCommand {
 
     // Not sure if I actually need these ones from the front end. (they're used by back end)
      PlayerGetProperties, // Possibly some variant of this one to get subs/audio/video
-    // PlayerGetItem,
+     PlayerGetPlayingItem,
      PlayerGetActivePlayers, 
 }
 
