@@ -5,21 +5,43 @@ pub struct PlayerProps {
     pub speed: f64,
     pub time: KodiTime,
     pub totaltime: KodiTime,
+    pub player_id: Option<u8>,
     // currentaudiostream: AudioStream,
     // audiostreams: Vec[AudioStream],
-    // canseek: bool,
-    // currentsubtitle: Subtitle,
-    // subtitles: Vec[Subtitles]
-    // currentvideostream: VideoStream,
-    // videostreams: Vec[VideoStream],
+    pub canseek: bool,
+    // pub currentsubtitle: Subtitle,
+    // pub subtitles: Vec<Subtitle>,
+    // pub currentvideostream: VideoStream,
+    // pub videostreams: Vec<VideoStream>,
     // playlistid: u8,
-    // position: u8,
+    // position: u8, //might rename playlist_position..
     // repeat: String //(could be enum?)
     // shuffled: bool,
-    // subtitleenabled: bool,
-    // type_: MediaType // need impl fromstring
+    pub subtitleenabled: bool,
+    // #[serde(rename = "type")]
+    // type_: MediaType,
 
 }
+
+// #[derive(Deserialize, Clone, Debug, Default)]
+// pub struct VideoStream {
+//     codec: String,
+//     height: u16,
+//     index: u8,
+//     language: String,
+//     name: String,
+//     width: u16,
+// }
+
+// #[derive(Deserialize, Clone, Debug)]
+// pub struct Subtitle {
+//     index: u8,
+//     isdefault: bool,
+//     isforced: bool,
+//     isimpaired: bool,
+//     language: String,
+//     name: String,
+// }
 
 
 #[derive(Deserialize, Clone, Debug, Default)]
@@ -64,11 +86,13 @@ pub enum KodiCommand {
 
     // Not sure if I actually need these ones from the front end. (they're used by back end)
      PlayerGetProperties, // Possibly some variant of this one to get subs/audio/video
-     PlayerGetPlayingItem,
+     PlayerGetPlayingItem(u8),
      PlayerGetActivePlayers, 
 }
 
-#[derive(Debug, Clone, Copy)]
+
+#[derive(Deserialize, Debug, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
 pub enum MediaType {
     Video,
    // Music,
@@ -89,14 +113,11 @@ impl MediaType {
 #[derive(Deserialize, Debug)]
 pub struct ActivePlayer {
     pub playerid: u8,
-  //  playertype: String,
-  //  type_: MediaType //need to impl 'from' string on that.
+    // playertype: String,
+    // #[serde(rename = "type")]
+    // type_: MediaType,
 }
 
-
-// TODO: proper serde models for all the useful outputs
-// Likely need a whole file just to contain them
-// Almost need a file of various enums/structs/etc anyway...
 #[derive(Deserialize, Debug, Clone)]
 pub struct Sources {
     pub label: String,
@@ -120,9 +141,45 @@ pub struct DirList {
     pub filetype: String,
     pub label: String,
     pub showtitle: Option<String>,
+    pub title: Option<String>,
     pub lastmodified: String,
     pub size: u64,
     pub playcount: Option<u16>,
     #[serde(rename = "type")]
     pub type_: String, // Should be enum from string
+}
+
+// TODO: LOTS more info
+// Might be ListItem that's returned by playingitem?
+#[derive(Deserialize, Debug, Clone, Default)]
+pub struct PlayingItem {
+    pub label: String,
+    pub title: String,
+    // album: String,
+    // artist: Struct // TODO!
+    // track: i16,
+    // cast: Struct // TODO!
+    // director: Struct // TODO!
+    // file: String,
+    // firstaired: String, //Could convert this to date myself?
+    // playcount: u8,
+    // plot: String,
+    // rating: f64,
+    // runtime: u32, // useless for currently playing item. Might be used for ListItem?
+    // streamdetails: TODO! struct: audio<vec> video<vec> subtitle<vec>
+    //                Note they're not quite the same as the PlayerProps 
+    //                models but somewhat similar
+    // studio: Struct // TODO!
+    // tagline: String,
+    // writer: Struct // TODO!
+    // year: u16,
+    // showtitle: String,
+    // episode: i16,
+    // season: i16,
+
+    // id: Option<i16> // ???
+
+    // this is the "episode" "movie" etc type - not filetype/MediaType
+    // type_: String, // Should be enum from string 
+    // there's also ignored field 'userrating' but I think it's useless.
 }

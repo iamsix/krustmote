@@ -4,13 +4,16 @@ use iced::theme::Theme;
 use iced::font;
 // use iced::time;
 use iced::widget::{
-    button, column, container, row, scrollable, Button, Space, text
+    button, column, container, row, scrollable, Button, Space, text,// image,
 };
-//use iced::window;
+
 use iced::{
     Color, Application, Command, 
     Element, Length, Settings,  //Subscription,
 };
+
+//use reqwest;
+
 
 mod icons;
 mod client;
@@ -27,6 +30,7 @@ struct Rustmote {
     state: State,
     menu_width: u16,
     file_list: Vec<ListData>,
+    breadcrumb: Vec<KodiCommand>,
     kodi_status: KodiStatus,
 }
 
@@ -45,8 +49,9 @@ pub struct ListData {
     on_click: Message, 
     play_count: Option<u16>,
     // content_area: Option<String>, // container/element instead?
-    bottom_left: Option<String>,
-    bottom_right: Option<String>,
+    bottom_left: Option<String>, // container/element?
+    bottom_right: Option<String>, // container/element?
+    // image: image::Handle,
     // picture: ???? - not sure if URL or actual image data
 }
 
@@ -72,6 +77,7 @@ impl Application for Rustmote {
                 menu_width: 150,
                 file_list: Vec::new(),
                 kodi_status,
+                breadcrumb: Vec::new(),
             },
             font::load(include_bytes!("../fonts/MaterialIcons-Regular.ttf").as_slice())
                 .map(Message::FontLoaded),
@@ -90,15 +96,24 @@ impl Application for Rustmote {
                 self.menu_width = if self.menu_width == 0 {150} else {0};
             }
 
+            Message::UpBreadCrumb => {
+                let cmd = self.up_breadcrumb();
+                return Command::perform(async {}, |_| 
+                    Message::KodiReq(cmd));
+            }
+
             Message::ServerStatus(event) => match event {
                 
                 client::Event::Connected(connection) => {
                     self.state = State::Connected(connection);
                 }
+
                 client::Event::Disconnected => {
                     self.state = State::Disconnected;
                 }
+
                 client::Event::UpdateDirList(dirlist) => {
+                    // TODO = push this to a different fn
                     let mut files: Vec<ListData> = Vec::new();
                     for file in dirlist {
                         // dbg!(&file);
@@ -150,10 +165,12 @@ impl Application for Rustmote {
                     self.file_list = files;
 
                 }
+
                 client::Event::UpdateSources(sources) => {
+                    // TODO: move this to a different fn
                     let mut files: Vec<ListData> = Vec::new();
                     files.push(ListData{
-                        label: String::from("- Database"), 
+                        label: String::from("- Database"),
                         on_click: Message::KodiReq(
                             KodiCommand::GetDirectory{
                                 path: String::from("videoDB://"),
@@ -163,7 +180,6 @@ impl Application for Rustmote {
                         play_count: None,
                         bottom_right: None,
                         bottom_left: None,
-                        
                     });
                     for source in sources {
                         files.push(ListData{
@@ -178,18 +194,28 @@ impl Application for Rustmote {
                             bottom_right: None,
                             bottom_left: None,
                         })
-                    }
+                    };
                     self.file_list = files;
                 }
-                client::Event::None => {}
+
                 client::Event::UpdatePlayerProps(player_props) => {
                     match player_props {
                         None => {
                             self.kodi_status.now_playing = false;
                         }
                         Some(props) => {
-                            // if !self.kodi_status.now_playing
-                            //    update playing item info?
+                            if !self.kodi_status.now_playing {
+                                self.kodi_status.now_playing = true;
+                                let player_id = props.player_id.unwrap();
+                                return Command::perform(async {}, move |_| 
+                                    Message::KodiReq(
+                                        KodiCommand::PlayerGetPlayingItem(
+                                            player_id
+                                        )
+                                    )
+                                );
+
+                            }
                             self.kodi_status.now_playing = true;
                             self.kodi_status.paused = props.speed == 0.0;
 
@@ -198,19 +224,41 @@ impl Application for Rustmote {
                         }
                     }
                 }
+
                 client::Event::UpdateKodiAppStatus(status) => {
                     self.kodi_status.muted = status.muted;
                 }
+
+                client::Event::UpdatePlayingItem(item) => {
+                    if item.title.is_empty() {
+                        self.kodi_status.playing_title = item.label;
+                    } else {
+                        self.kodi_status.playing_title = item.title;
+                    }
+                }
+
+                client::Event::None => {}
 
             }
             Message::KodiReq(command) => {
                 match &mut self.state {
                     State::Connected(connection) => {
+                        match &command {
+                            &KodiCommand::GetSources(_) => {
+                                self.breadcrumb.clear();
+                                self.breadcrumb.push(command.clone());
+                            }
+                            &KodiCommand::GetDirectory {.. } => {
+                                self.breadcrumb.push(command.clone());
+                            }
+
+                            _ => {}
+                        }
                         connection.send(command);
 
                     }
                     State::Disconnected => {
-                        println!("Kodi is apparently disconnected so I can't");
+                        panic!("Kodi is apparently disconnected so I can't");
                     }
                 }
 
@@ -255,8 +303,6 @@ impl Application for Rustmote {
                                 self.kodi_status.duration
                             )
                         )
-
-
                     ].spacing(20)
                 ).height(50)
             } else {
@@ -274,14 +320,23 @@ impl Application for Rustmote {
         Theme::Dark
     }
 
-
-
 }
+
+impl Rustmote {
+    fn up_breadcrumb(&mut self) -> KodiCommand {
+        // dbg!(&self.breadcrumb);
+        let _ = self.breadcrumb.pop();
+        let command = self.breadcrumb.pop();
+        command.unwrap()
+    }
+}
+
 
 #[derive(Debug, Clone)]
 enum Message{
     FontLoaded(Result<(), font::Error>),
     ToggleLeftMenu,
+    UpBreadCrumb,
     ServerStatus(client::Event),
     KodiReq(KodiCommand),
 }
@@ -314,15 +369,24 @@ fn center_area<'a>(rustmote: &'a Rustmote) -> Element<'a, Message> {
     // <spacer ------------><button>...<button><spacer......>
     // not sure if I can easily calculate what items to show though
     scrollable(
-        column(
-            rustmote.file_list
-            .iter()
-            .map(make_listitem)
-            .map(Element::from)
-            .collect()
-        )
-        .spacing(1)
-        .padding(20),
+        column![
+            if rustmote.breadcrumb.len() > 1 {
+                button("..")
+                    .on_press(Message::UpBreadCrumb)
+                    .width(Length::Fill)
+            } else {
+                button("..").width(Length::Fill)
+            },
+            column(
+                rustmote.file_list
+                .iter()
+                .map(make_listitem)
+                .map(Element::from)
+                .collect()
+            )
+            .spacing(1)
+            .padding(5),
+        ]
     )
     .width(Length::Fill)
     .into()
@@ -386,11 +450,13 @@ fn left_menu<'a>(rustmote: &Rustmote) -> Element<'a, Message> {
                     KodiCommand::GetSources(
                         MediaType::Video)
                     )
-                ),
-            button("Settings")
+                )
+                .width(Length::Fill),
+            button("Settings").width(Length::Fill),
         ]
         .spacing(1)
-        .padding(10),
+        .padding(5)
+        .width(100),
     )
     .max_width(rustmote.menu_width)
     .into()
@@ -408,7 +474,7 @@ fn remote<'a>(rustmote: &Rustmote) -> Element<'a, Message> {
             button("props-test")
                 .on_press(Message::KodiReq(KodiCommand::PlayerGetProperties)),
             button("item-test")
-                .on_press(Message::KodiReq(KodiCommand::PlayerGetPlayingItem)),
+                .on_press(Message::KodiReq(KodiCommand::PlayerGetPlayingItem(1))),
             row![
                 button(icons::volume_down().size(32))
                     .on_press(Message::KodiReq(

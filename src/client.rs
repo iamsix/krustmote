@@ -83,11 +83,18 @@ pub fn connect() -> Subscription<Event> {
                                         Event::Connected(Connection(sender))
                                     ).await;
 
+                                    // TODO: More notifications?
                                     let on_play: WsSubscription<Value>  = client
                                         .subscribe_to_method("Player.OnPlay")
                                         .await
                                         .unwrap();
                                     notifications.insert("OnPlay", on_play);
+
+                                    let on_stop: WsSubscription<Value>  = client
+                                        .subscribe_to_method("Player.OnStop")
+                                        .await
+                                        .unwrap();
+                                    notifications.insert("OnStop", on_stop);
 
                                     state = State::Connected(client, reciever);
                                 }
@@ -104,14 +111,44 @@ pub fn connect() -> Subscription<Event> {
                     State::Connected(client, input) => {
 
                         select! {
-                               recieved = notifications.next() => {
-                                // do Player.GetItem here?
-                                    let (func, data) = recieved.unwrap();
-                                    dbg!(func);
-                                    dbg!(data.unwrap());
+                            recieved = notifications.next() => {
+                                let (func, data) = recieved.unwrap();
+                                // TODO: move this match to a different fn
+                                // TBH these notifications are kinda useless
+                                //     since I need to poll anyway
+                                match func {
+                                    "OnPlay" => {
+                                        let info = data.unwrap();
+                                        dbg!(&info);
+                                        let player = <ActivePlayer as Deserialize>::deserialize(
+                                            &info["data"]["player"]
+                                        ).unwrap();
+
+                                        // possibly look at the item ID and get that if exists?
+                                        
+                                        let result = handle_kodi_command(
+                                            KodiCommand::PlayerGetPlayingItem(player.playerid),
+                                            client
+                                        ).await;
+                                        let result = result.unwrap_or(Event::None);
+                                        if matches!(&result, &Event::Disconnected) {
+                                            state = State::Disconnected;
+                                        } else {
+                                            let _ = output.send(result).await;
+                                        };
+
+                                    }
+                                    "OnStop" => {
+                                        let nothing = PlayingItem::default();
+                                        let nothing = Event::UpdatePlayingItem(nothing);
+                                        let _ = output.send(nothing).await;
+                                    }
+                                    _ => {
+                                        dbg!(func, data.unwrap());
+                                    }
                                 }
-                            
-                    
+                            }
+
                             _ = poller.tick() => {
                                 // println!("Tick");
                                 let app_status = poll_kodi_application_status(client).await;
@@ -194,23 +231,21 @@ async fn poll_kodi_player_status (
     if players.len() == 0 {
         return None;
     }
-
-    // For now we only consider player[0]
+    // For now only considering the first playerid it sees...
     let player_id = players[0].playerid;
-    let mut params = ObjectParams::new();
-    let _ = params.insert("playerid", player_id);
-    let _ = params.insert("properties", PLAYER_PROPS);
 
     let response: Result<Value, _> = client.request(
         "Player.GetProperties",
-        params,
+        rpc_obj_params!{"playerid"=player_id, "properties"=PLAYER_PROPS},
     ).await;
     if response.is_err() {
         dbg!(response.err());
         return None;
     } 
     let res = response.unwrap();
-    let playerprops = <PlayerProps as Deserialize>::deserialize(res).unwrap();
+    // dbg!(&res);
+    let mut playerprops = <PlayerProps as Deserialize>::deserialize(res).unwrap();
+    playerprops.player_id = Some(player_id);
     Some(Event::UpdatePlayerProps(Some(playerprops)))
 }
 
@@ -259,17 +294,14 @@ async fn handle_kodi_command(
             }
 
             let res = response.unwrap();
-            // dbg!(&res);
+            dbg!(&res);
             let list = <Vec<DirList> as Deserialize>::deserialize(
                     &res["files"]
                 ).unwrap();
 
-            // TODO: Give the fornt end that Vec<DirList> Directly so it can handle it.
-
-            return Some(Event::UpdateDirList(list));
-
-            
+            Some(Event::UpdateDirList(list))
         }
+
         KodiCommand::GetSources(mediatype) => {
             let response: Result<Map<String, Value>, _> = client.request(
                 "Files.GetSources",
@@ -287,8 +319,7 @@ async fn handle_kodi_command(
                     &res["sources"]
                 ).unwrap();
             
-            Some(Event::UpdateSources(sources) )
-
+            Some(Event::UpdateSources(sources))
         }
 
         KodiCommand::PlayerOpen(file) => {
@@ -334,6 +365,28 @@ async fn handle_kodi_command(
             None
         }
 
+        KodiCommand::PlayerGetPlayingItem(player_id) => {
+            let response: Result<Map<String, Value>, _> = client.request(
+                "Player.GetItem",
+                rpc_obj_params!{
+                    "playerid"=player_id, 
+                    "properties"=PLAYING_ITEM_PROPS
+                },
+            ).await;
+            if response.is_err() {
+                dbg!(response.err());
+                return Some(Event::Disconnected);
+            }
+            let response = response.unwrap();
+            // dbg!(&response);
+            let playing_item = <PlayingItem as Deserialize>::deserialize(
+                &response["item"]
+            ).unwrap();
+
+            Some(Event::UpdatePlayingItem(playing_item))
+            
+        }
+        
         // Debug command
         KodiCommand::PlayerGetActivePlayers => {
             let response: Result<Value, _> = client.request(
@@ -350,27 +403,17 @@ async fn handle_kodi_command(
 
         // Debug command
         KodiCommand::PlayerGetProperties => {
-            let response: Result<Map<String, Value>, _> = client.request(
+            let response: Result<Value, _> = client.request(
                 "Player.GetProperties",
-                rpc_obj_params!{"playerid"=0, "properties"=PLAYER_PROPS},
+                rpc_obj_params!{"playerid"=1, "properties"=PLAYER_PROPS},
             ).await;
             if response.is_err() {
                 dbg!(response.err());
             } else {
-                dbg!(response.unwrap());
-            }
-            None
-        }
-
-        KodiCommand::PlayerGetPlayingItem => {
-            let response: Result<Map<String, Value>, _> = client.request(
-                "Player.GetItem",
-                rpc_obj_params!{"playerid"=0, "properties"=PLAYING_ITEM_PROPS},
-            ).await;
-            if response.is_err() {
-                dbg!(response.err());
-            } else {
-                dbg!(response.unwrap());
+                let res = response.unwrap();
+                dbg!(&res);
+                let props = <PlayerProps as Deserialize>::deserialize(res).unwrap();
+                dbg!(props);
             }
             None
         }
@@ -396,5 +439,6 @@ pub enum Event {
     UpdateSources(Vec<Sources>),
     UpdateDirList(Vec<DirList>),
     UpdatePlayerProps(Option<PlayerProps>),
-    UpdateKodiAppStatus(KodiAppStatus)
+    UpdateKodiAppStatus(KodiAppStatus),
+    UpdatePlayingItem(PlayingItem)
 }
