@@ -4,7 +4,7 @@ use iced::theme::Theme;
 use iced::font;
 // use iced::time;
 use iced::widget::{
-    button, column, container, row, scrollable, Button, Space, text, image,
+    button, column, container, row, scrollable, Button, Space, text, image, text_input,
 };
 
 use iced::{
@@ -31,6 +31,7 @@ struct Rustmote {
     state: State,
     menu_width: u16,
     file_list: Vec<ListData>,
+    file_list_filter: String,
     breadcrumb: Vec<KodiCommand>,
     kodi_status: KodiStatus,
 }
@@ -56,6 +57,26 @@ pub struct ListData {
     // picture: ???? - not sure if URL or actual image data
 }
 
+
+
+#[derive(Debug, Clone)]
+enum Message{
+    FontLoaded(Result<(), font::Error>),
+    ToggleLeftMenu,
+    UpBreadCrumb,
+    ServerStatus(client::Event),
+    KodiReq(KodiCommand),
+    Scrolled(scrollable::Viewport),
+    FilterFileList(String),
+}
+
+
+enum State {
+    Disconnected,
+    Connected(client::Connection),
+}
+
+
 impl Application for Rustmote {
     type Message = Message;
     type Theme = Theme;
@@ -77,6 +98,7 @@ impl Application for Rustmote {
                 state: State::Disconnected,
                 menu_width: 150,
                 file_list: Vec::new(),
+                file_list_filter: "".to_string(),
                 kodi_status,
                 breadcrumb: Vec::new(),
             },
@@ -101,6 +123,14 @@ impl Application for Rustmote {
                 let cmd = self.up_breadcrumb();
                 return Command::perform(async {}, |_| 
                     Message::KodiReq(cmd));
+            }
+
+            Message::Scrolled(_thing) => {
+                // dbg!(thing);
+            }
+
+            Message::FilterFileList(filter) => {
+                self.file_list_filter = filter;
             }
 
             Message::ServerStatus(event) => match event {
@@ -180,6 +210,7 @@ impl Application for Rustmote {
                 }
 
                 client::Event::UpdateSources(sources) => {
+                    self.file_list_filter = "".to_string();
                     // TODO: move this to a different fn
                     let mut files: Vec<ListData> = Vec::new();
                     files.push(ListData{
@@ -319,7 +350,7 @@ impl Application for Rustmote {
                             )
                         )
                     ].spacing(20)
-                ).height(50)
+                ).height(80)
             } else {
                 container(Space::new(0, 0))
             }
@@ -354,28 +385,14 @@ impl Rustmote {
     }
 }
 
-
-#[derive(Debug, Clone)]
-enum Message{
-    FontLoaded(Result<(), font::Error>),
-    ToggleLeftMenu,
-    UpBreadCrumb,
-    ServerStatus(client::Event),
-    KodiReq(KodiCommand),
-}
-
-
-enum State {
-    Disconnected,
-    Connected(client::Connection),
-}
-
 // TODO : Move these somewhere else / to a different file/struct/etc
 fn top_bar<'a>(rustmote: &Rustmote) -> Element<'a, Message> {
     container(
         row![
             button("=").on_press(Message::ToggleLeftMenu),
             Space::new(Length::Fill, Length::Shrink),
+            text_input("Filter..", &rustmote.file_list_filter)
+                .on_input(Message::FilterFileList),
             match rustmote.state {
                 State::Disconnected => icons::sync_disabled(),
                 _ => icons::sync()
@@ -391,28 +408,43 @@ fn center_area<'a>(rustmote: &'a Rustmote) -> Element<'a, Message> {
     // might be able to fake lazy loading in a weird way using .on_scroll()
     // <spacer ------------><button>...<button><spacer......>
     // not sure if I can easily calculate what items to show though
-    scrollable(
-        column![
-            if rustmote.breadcrumb.len() > 1 {
+    
+    column![
+        row![if rustmote.breadcrumb.len() > 1 {
                 button("..")
                     .on_press(Message::UpBreadCrumb)
                     .width(Length::Fill)
+                    .height(50)
             } else {
-                button("..").width(Length::Fill)
+                button("")
+                    .width(Length::Fill)
+                    .height(50)
             },
+            
+        ].spacing(1)
+        .padding(5),
+        scrollable(
             column(
                 rustmote.file_list
                 .iter()
+                .filter(|&x| 
+                    x.label.to_lowercase()
+                    .contains(&rustmote.file_list_filter.to_lowercase())
+                )
                 .map(make_listitem)
                 .map(Element::from)
                 .collect()
             )
             .spacing(1)
             .padding(5),
-        ]
-    )
-    .width(Length::Fill)
+        )
+        
+        .on_scroll(Message::Scrolled)
+   
+    ].width(Length::Fill)
     .into()
+    
+    
 }
 
 fn make_listitem(data: &ListData) -> Button<Message> {
@@ -439,7 +471,7 @@ fn make_listitem(data: &ListData) -> Button<Message> {
             if data.image.is_some(){     
                 let img = data.image.clone().unwrap();                 
                 container(
-                    image(img).height(60)
+                    image(img).height(45)
                 )
             } else {
                 container("")
@@ -471,6 +503,7 @@ fn make_listitem(data: &ListData) -> Button<Message> {
         data.on_click.clone()
     )
     .width(Length::Fill)
+    .height(50)
 }
 
 fn left_menu<'a>(rustmote: &Rustmote) -> Element<'a, Message> {

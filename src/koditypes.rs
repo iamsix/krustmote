@@ -156,6 +156,7 @@ pub enum VideoType {
     Episode,
     Movie,
     Unknown,
+    TVShow
 }
 
 #[derive(Deserialize, Debug, Clone)]
