@@ -294,7 +294,7 @@ async fn handle_kodi_command(
             }
 
             let res = response.unwrap();
-            dbg!(&res);
+            // dbg!(&res);
             let list = <Vec<DirList> as Deserialize>::deserialize(
                     &res["files"]
                 ).unwrap();

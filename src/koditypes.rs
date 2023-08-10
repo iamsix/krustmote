@@ -91,7 +91,7 @@ pub enum KodiCommand {
 }
 
 
-#[derive(Deserialize, Debug, Clone, Copy)]
+#[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "lowercase")]
 pub enum MediaType {
     Video,
@@ -138,6 +138,7 @@ pub struct DirSort {
 #[derive(Deserialize, Debug, Clone)]
 pub struct DirList {
     pub file: String,
+    pub art: Art,
     pub filetype: String,
     pub label: String,
     pub showtitle: Option<String>,
@@ -146,7 +147,21 @@ pub struct DirList {
     pub size: u64,
     pub playcount: Option<u16>,
     #[serde(rename = "type")]
-    pub type_: String, // Should be enum from string
+    pub type_: VideoType, // Should be enum from string
+}
+
+#[derive(Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum VideoType {
+    Episode,
+    Movie,
+    Unknown,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct Art {
+    pub thumb: Option<String>,
+    pub poster: Option<String>,
 }
 
 // TODO: LOTS more info

@@ -4,7 +4,7 @@ use iced::theme::Theme;
 use iced::font;
 // use iced::time;
 use iced::widget::{
-    button, column, container, row, scrollable, Button, Space, text,// image,
+    button, column, container, row, scrollable, Button, Space, text, image,
 };
 
 use iced::{
@@ -12,7 +12,8 @@ use iced::{
     Element, Length, Settings,  //Subscription,
 };
 
-//use reqwest;
+use reqwest;
+use urlencoding;
 
 
 mod icons;
@@ -51,7 +52,7 @@ pub struct ListData {
     // content_area: Option<String>, // container/element instead?
     bottom_left: Option<String>, // container/element?
     bottom_right: Option<String>, // container/element?
-    // image: image::Handle,
+    image: Option<image::Handle>,
     // picture: ???? - not sure if URL or actual image data
 }
 
@@ -117,7 +118,7 @@ impl Application for Rustmote {
                     let mut files: Vec<ListData> = Vec::new();
                     for file in dirlist {
                         // dbg!(&file);
-                        let label = if file.type_.eq_ignore_ascii_case("episode") {
+                        let label = if file.type_ == VideoType::Episode {
                             format!(
                                 "{} - {}", 
                                 file.showtitle.unwrap_or("".to_string()), 
@@ -126,6 +127,17 @@ impl Application for Rustmote {
                         } else {
                             file.label
                         };
+
+                        let pic = 
+                        if file.type_ == VideoType::Episode && file.art.thumb.is_some() {
+                            let thumb = file.art.thumb.unwrap();
+                            let thumb = urlencoding::encode(thumb.as_str());
+                            let url = format!("http://192.168.1.22:8080/image/{}", thumb);
+                            Some(Rustmote::get_thumb(url))
+                        } else {
+                            None
+                        };
+                        
         
                         files.push(ListData{
                             label,
@@ -159,6 +171,7 @@ impl Application for Rustmote {
                                 } else {
                                     None
                                 },
+                            image: pic,
                             
                         })
                     }
@@ -180,6 +193,7 @@ impl Application for Rustmote {
                         play_count: None,
                         bottom_right: None,
                         bottom_left: None,
+                        image: None,
                     });
                     for source in sources {
                         files.push(ListData{
@@ -193,6 +207,7 @@ impl Application for Rustmote {
                             play_count: None,
                             bottom_right: None,
                             bottom_left: None,
+                            image: None,
                         })
                     };
                     self.file_list = files;
@@ -329,6 +344,14 @@ impl Rustmote {
         let command = self.breadcrumb.pop();
         command.unwrap()
     }
+
+    fn get_thumb(url: String) -> image::Handle {
+        let img = reqwest::blocking::get(url);
+        let img = img.unwrap();
+        let img = img.bytes().unwrap();
+    
+        image::Handle::from_memory(img)
+    }
 }
 
 
@@ -412,7 +435,15 @@ fn make_listitem(data: &ListData) -> Button<Message> {
     //
     // TODO: I should specify label heights here to ensure no line wrapping/etc
     Button::new(
-        row![                      
+        row![
+            if data.image.is_some(){     
+                let img = data.image.clone().unwrap();                 
+                container(
+                    image(img).height(60)
+                )
+            } else {
+                container("")
+            },
             // Watched will proabbly go in picture area - for now just this icon or not    
             if data.play_count.unwrap_or(0) > 0 {
                 icons::done()
