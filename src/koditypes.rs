@@ -1,4 +1,78 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
+
+pub const FILE_PROPS: [&'static str; 20] = [
+    "title",
+    "rating",
+    "genre",
+    "artist",
+    "track",
+    "season",
+    "episode",
+    "year",
+    "duration",
+    "album",
+    "showtitle",
+    "playcount",
+    "file",
+    "mimetype",
+    "size",
+    "lastmodified",
+    "resume",
+    "art",
+    "runtime",
+    "displayartist",
+];
+
+pub const PLAYER_PROPS: [&'static str; 17] = [
+    "audiostreams",
+    "canseek",
+    "currentaudiostream",
+    "currentsubtitle",
+    "partymode",
+    "playlistid",
+    "position",
+    "repeat",
+    "shuffled",
+    "speed",
+    "subtitleenabled",
+    "subtitles",
+    "time",
+    "totaltime",
+    "type",
+    "videostreams",
+    "currentvideostream",
+];
+
+pub const PLAYING_ITEM_PROPS: [&'static str; 28] = [
+    "album",
+    "albumartist",
+    "artist",
+    "episode",
+    "art",
+    "file",
+    "genre",
+    "plot",
+    "rating",
+    "season",
+    "showtitle",
+    "studio",
+    "tagline",
+    "title",
+    "track",
+    "year",
+    "streamdetails",
+    "originaltitle",
+    "playcount",
+    "runtime",
+    "duration",
+    "cast",
+    "writer",
+    "director",
+    "userrating",
+    "firstaired",
+    "displayartist",
+    "uniqueid",
+];
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct PlayerProps {
@@ -20,7 +94,6 @@ pub struct PlayerProps {
     pub subtitleenabled: bool,
     // #[serde(rename = "type")]
     // type_: MediaType,
-
 }
 
 // #[derive(Deserialize, Clone, Debug, Default)]
@@ -43,7 +116,6 @@ pub struct PlayerProps {
 //     name: String,
 // }
 
-
 #[derive(Deserialize, Clone, Debug, Default)]
 pub struct KodiTime {
     pub hours: u8,
@@ -57,11 +129,13 @@ pub struct KodiTime {
 
 impl std::fmt::Display for KodiTime {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{:02}:{:02}:{:02}", self.hours, self.minutes, self.seconds)
+        write!(
+            f,
+            "{:02}:{:02}:{:02}",
+            self.hours, self.minutes, self.seconds
+        )
     }
 }
-
-
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct KodiAppStatus {
@@ -69,15 +143,19 @@ pub struct KodiAppStatus {
     //volume: u8,
 }
 
-
-
 #[derive(Debug, Clone)]
 pub enum KodiCommand {
     Test,
     GetSources(MediaType), // TODO: SortType
-    GetDirectory{path: String, media_type: MediaType}, // TODO: SortType
+    GetDirectory {
+        path: String,
+        media_type: MediaType,
+    }, // TODO: SortType
     PlayerOpen(String),
-    InputButtonEvent{button: &'static str, keymap: &'static str},
+    InputButtonEvent {
+        button: &'static str,
+        keymap: &'static str,
+    },
     InputExecuteAction(&'static str),
     // ToggleMute,
     // PlayerPlayPause,
@@ -85,20 +163,19 @@ pub enum KodiCommand {
     // GUIActivateWindow(String),
 
     // Not sure if I actually need these ones from the front end. (they're used by back end)
-     PlayerGetProperties, // Possibly some variant of this one to get subs/audio/video
-     PlayerGetPlayingItem(u8),
-     PlayerGetActivePlayers, 
+    PlayerGetProperties, // Possibly some variant of this one to get subs/audio/video
+    PlayerGetPlayingItem(u8),
+    PlayerGetActivePlayers,
 }
-
 
 #[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "lowercase")]
 pub enum MediaType {
     Video,
-   // Music,
-   // Pictures,
-   // Files,
-   // Programs,
+    // Music,
+    // Pictures,
+    // Files,
+    // Programs,
 }
 
 impl MediaType {
@@ -106,7 +183,6 @@ impl MediaType {
         match self {
             MediaType::Video => "video",
         }
-
     }
 }
 
@@ -123,7 +199,6 @@ pub struct Sources {
     pub label: String,
     pub file: String,
 }
-
 
 // TODO: SortType that defines these
 #[derive(Serialize, Debug)]
@@ -156,7 +231,7 @@ pub enum VideoType {
     Episode,
     Movie,
     Unknown,
-    TVShow
+    TVShow,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -183,7 +258,7 @@ pub struct PlayingItem {
     // rating: f64,
     // runtime: u32, // useless for currently playing item. Might be used for ListItem?
     // streamdetails: TODO! struct: audio<vec> video<vec> subtitle<vec>
-    //                Note they're not quite the same as the PlayerProps 
+    //                Note they're not quite the same as the PlayerProps
     //                models but somewhat similar
     // studio: Struct // TODO!
     // tagline: String,
@@ -196,6 +271,6 @@ pub struct PlayingItem {
     // id: Option<i16> // ???
 
     // this is the "episode" "movie" etc type - not filetype/MediaType
-    // type_: String, // Should be enum from string 
+    // type_: String, // Should be enum from string
     // there's also ignored field 'userrating' but I think it's useless.
 }
