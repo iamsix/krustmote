@@ -1,19 +1,13 @@
 use iced::executor;
 use iced::font;
 use iced::theme::Theme;
+use iced::widget::scrollable::Id;
 // use iced::time;
 use iced::widget::{
     button, column, container, image, row, scrollable, text, text_input, Button, Space,
 };
 
-use iced::{
-    Application,
-    Color,
-    Command,
-    Element,
-    Length,
-    Settings, //Subscription,
-};
+use iced::{subscription, window, Application, Color, Command, Element, Event, Length, Settings};
 
 use reqwest;
 use urlencoding;
@@ -26,17 +20,25 @@ use koditypes::*;
 //mod recycler;
 
 fn main() -> iced::Result {
-    Rustmote::run(Settings::default())
+    Krustmote::run(Settings::default())
 }
 
-struct Rustmote {
+struct Krustmote {
     state: State,
     menu_width: u16,
-    file_list: Vec<ListData>,
-    file_list_filter: String,
-    breadcrumb: Vec<KodiCommand>,
     kodi_status: KodiStatus,
+    item_list: ItemList,
 }
+
+struct ItemList {
+    data: Vec<ListData>,
+    breadcrumb: Vec<KodiCommand>,
+    filter: String,
+    start_offset: u32,
+    visible_count: u32,
+}
+
+const ITEM_HEIGHT: u32 = 50;
 
 struct KodiStatus {
     now_playing: bool,
@@ -61,13 +63,14 @@ pub struct ListData {
 
 #[derive(Debug, Clone)]
 enum Message {
-    FontLoaded(Result<(), font::Error>),
     ToggleLeftMenu,
     UpBreadCrumb,
     ServerStatus(client::Event),
     KodiReq(KodiCommand),
     Scrolled(scrollable::Viewport),
     FilterFileList(String),
+    FontLoaded(Result<(), font::Error>),
+    WindowResized(u32),
 }
 
 enum State {
@@ -75,7 +78,7 @@ enum State {
     Connected(client::Connection),
 }
 
-impl Application for Rustmote {
+impl Application for Krustmote {
     type Message = Message;
     type Theme = Theme;
     type Executor = executor::Default;
@@ -90,14 +93,20 @@ impl Application for Rustmote {
             play_time: Default::default(),
             duration: Default::default(),
         };
+
+        let item_list = ItemList {
+            data: Vec::new(),
+            breadcrumb: Vec::new(),
+            start_offset: 0,
+            visible_count: 0,
+            filter: String::from(""),
+        };
         (
             Self {
                 state: State::Disconnected,
                 menu_width: 150,
-                file_list: Vec::new(),
-                file_list_filter: "".to_string(),
                 kodi_status,
-                breadcrumb: Vec::new(),
+                item_list,
             },
             font::load(include_bytes!("../fonts/MaterialIcons-Regular.ttf").as_slice())
                 .map(Message::FontLoaded),
@@ -116,17 +125,27 @@ impl Application for Rustmote {
                 self.menu_width = if self.menu_width == 0 { 150 } else { 0 };
             }
 
+            Message::WindowResized(height) => {
+                self.item_list.visible_count = (height / ITEM_HEIGHT) + 2;
+            }
+
             Message::UpBreadCrumb => {
                 let cmd = self.up_breadcrumb();
                 return Command::perform(async {}, |_| Message::KodiReq(cmd));
             }
 
-            Message::Scrolled(_thing) => {
-                // dbg!(thing);
+            Message::Scrolled(view) => {
+                let offset = (view.absolute_offset().y / ITEM_HEIGHT as f32) as u32;
+                self.item_list.start_offset = offset.saturating_sub(1);
             }
 
             Message::FilterFileList(filter) => {
-                self.file_list_filter = filter;
+                self.item_list.filter = filter;
+                self.item_list.start_offset = 0;
+                return scrollable::snap_to(
+                    Id::new("files"),
+                    scrollable::RelativeOffset { x: 0.0, y: 0.0 },
+                );
             }
 
             Message::ServerStatus(event) => match event {
@@ -158,7 +177,7 @@ impl Application for Rustmote {
                             let thumb = file.art.thumb.unwrap();
                             let thumb = urlencoding::encode(thumb.as_str());
                             let url = format!("http://192.168.1.22:8080/image/{}", thumb);
-                            Some(Rustmote::get_thumb(url))
+                            Some(Krustmote::get_thumb(url))
                         } else {
                             None
                         };
@@ -188,11 +207,11 @@ impl Application for Rustmote {
                             image: pic,
                         })
                     }
-                    self.file_list = files;
+                    self.item_list.data = files;
                 }
 
                 client::Event::UpdateSources(sources) => {
-                    self.file_list_filter = "".to_string();
+                    self.item_list.filter = "".to_string();
                     // TODO: move this to a different fn
                     let mut files: Vec<ListData> = Vec::new();
                     files.push(ListData {
@@ -219,7 +238,7 @@ impl Application for Rustmote {
                             image: None,
                         })
                     }
-                    self.file_list = files;
+                    self.item_list.data = files;
                 }
 
                 client::Event::UpdatePlayerProps(player_props) => match player_props {
@@ -258,18 +277,30 @@ impl Application for Rustmote {
             },
             Message::KodiReq(command) => match &mut self.state {
                 State::Connected(connection) => {
+                    let mut item_command = false;
                     match &command {
                         &KodiCommand::GetSources(_) => {
-                            self.breadcrumb.clear();
-                            self.breadcrumb.push(command.clone());
+                            self.item_list.start_offset = 0;
+                            self.item_list.breadcrumb.clear();
+                            self.item_list.breadcrumb.push(command.clone());
+                            item_command = true;
                         }
                         &KodiCommand::GetDirectory { .. } => {
-                            self.breadcrumb.push(command.clone());
+                            self.item_list.start_offset = 0;
+                            self.item_list.breadcrumb.push(command.clone());
+                            item_command = true;
                         }
 
                         _ => {}
                     }
                     connection.send(command);
+
+                    if item_command {
+                        return scrollable::snap_to(
+                            Id::new("files"),
+                            scrollable::RelativeOffset { x: 0.0, y: 0.0 },
+                        );
+                    }
                 }
                 State::Disconnected => {
                     panic!("Kodi is apparently disconnected so I can't");
@@ -282,7 +313,15 @@ impl Application for Rustmote {
     }
 
     fn subscription(&self) -> iced::Subscription<Self::Message> {
-        client::connect().map(Message::ServerStatus)
+        iced::Subscription::batch(vec![
+            subscription::events_with(|event, _| match event {
+                Event::Window(window::Event::Resized { width: _, height }) => {
+                    Some(Message::WindowResized(height))
+                }
+                _ => None,
+            }),
+            client::connect().map(Message::ServerStatus),
+        ])
     }
 
     fn view(&self) -> Element<Message> {
@@ -331,11 +370,11 @@ impl Application for Rustmote {
     }
 }
 
-impl Rustmote {
+impl Krustmote {
     fn up_breadcrumb(&mut self) -> KodiCommand {
         // dbg!(&self.breadcrumb);
-        let _ = self.breadcrumb.pop();
-        let command = self.breadcrumb.pop();
+        let _ = self.item_list.breadcrumb.pop();
+        let command = self.item_list.breadcrumb.pop();
         command.unwrap()
     }
 
@@ -349,12 +388,12 @@ impl Rustmote {
 }
 
 // TODO : Move these somewhere else / to a different file/struct/etc
-fn top_bar<'a>(rustmote: &Rustmote) -> Element<'a, Message> {
+fn top_bar<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
     container(row![
         button("=").on_press(Message::ToggleLeftMenu),
         Space::new(Length::Fill, Length::Shrink),
-        text_input("Filter..", &rustmote.file_list_filter).on_input(Message::FilterFileList),
-        match rustmote.state {
+        text_input("Filter..", &krustmote.item_list.filter).on_input(Message::FilterFileList),
+        match krustmote.state {
             State::Disconnected => icons::sync_disabled(),
             _ => icons::sync(),
         },
@@ -362,15 +401,64 @@ fn top_bar<'a>(rustmote: &Rustmote) -> Element<'a, Message> {
     .into()
 }
 
-fn center_area<'a>(rustmote: &'a Rustmote) -> Element<'a, Message> {
-    // hopefully thousands of 'buttons' in a list doesn't cause any problems...
-    // look in to Lazy and virtual list
-    // might be able to fake lazy loading in a weird way using .on_scroll()
-    // <spacer ------------><button>...<button><spacer......>
-    // not sure if I can easily calculate what items to show though
+fn center_area<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> {
+    let offset = krustmote.item_list.start_offset;
+
+    let count =
+        (offset + krustmote.item_list.visible_count).min(krustmote.item_list.data.len() as u32);
+
+    let mut virtual_list: Vec<Element<'a, Message>> = Vec::new();
+
+    let top_space = offset * ITEM_HEIGHT;
+    virtual_list.push(Space::new(10, top_space as f32).into());
+
+    let files = krustmote
+        .item_list
+        .data
+        .iter()
+        .filter(|&x| {
+            x.label
+                .to_lowercase()
+                .contains(&krustmote.item_list.filter.to_lowercase())
+        })
+        .enumerate()
+        .filter(|&(i, _)| i as u32 >= offset && i as u32 <= count)
+        .map(|(_, data)| make_listitem(data))
+        .map(Element::from)
+        .into_iter();
+
+    virtual_list.extend(files);
+
+    let bottom_space = if !krustmote.item_list.filter.is_empty() {
+        // unfortunately we have to filter this twice
+        // since the second enumerated/range filter changes the len()
+        krustmote
+            .item_list
+            .data
+            .iter()
+            .filter(|&x| {
+                x.label
+                    .to_lowercase()
+                    .contains(&krustmote.item_list.filter.to_lowercase())
+            })
+            .count() as u32
+            * ITEM_HEIGHT
+    } else if krustmote.item_list.data.len() > 0 {
+        krustmote.item_list.data.len() as u32 * ITEM_HEIGHT
+    } else {
+        0
+    }
+    .saturating_sub(offset * ITEM_HEIGHT)
+    .saturating_sub(krustmote.item_list.visible_count * ITEM_HEIGHT);
+
+    virtual_list.push(Space::new(10, bottom_space as f32).into());
+
+    // dbg!(virtual_list.len());
+
+    let virtual_list = column(virtual_list);
 
     column![
-        row![if rustmote.breadcrumb.len() > 1 {
+        row![if krustmote.item_list.breadcrumb.len() > 1 {
             button("..")
                 .on_press(Message::UpBreadCrumb)
                 .width(Length::Fill)
@@ -380,23 +468,9 @@ fn center_area<'a>(rustmote: &'a Rustmote) -> Element<'a, Message> {
         },]
         .spacing(1)
         .padding(5),
-        scrollable(
-            column(
-                rustmote
-                    .file_list
-                    .iter()
-                    .filter(|&x| x
-                        .label
-                        .to_lowercase()
-                        .contains(&rustmote.file_list_filter.to_lowercase()))
-                    .map(make_listitem)
-                    .map(Element::from)
-                    .collect()
-            )
-            .spacing(1)
-            .padding(5),
-        )
-        .on_scroll(Message::Scrolled)
+        scrollable(virtual_list.spacing(1).padding(5),)
+            .on_scroll(Message::Scrolled)
+            .id(Id::new("files"))
     ]
     .width(Length::Fill)
     .into()
@@ -438,9 +512,7 @@ fn make_listitem(data: &ListData) -> Button<Message> {
             data.label.as_str(),
             row![
                 match &data.bottom_left {
-                    Some(d) => {
-                        d.as_str()
-                    }
+                    Some(d) => d.as_str(),
                     None => "",
                 },
                 Space::new(Length::Fill, Length::Shrink),
@@ -453,10 +525,10 @@ fn make_listitem(data: &ListData) -> Button<Message> {
     ])
     .on_press(data.on_click.clone())
     .width(Length::Fill)
-    .height(50)
+    .height(ITEM_HEIGHT as f32)
 }
 
-fn left_menu<'a>(rustmote: &Rustmote) -> Element<'a, Message> {
+fn left_menu<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
     container(
         column![
             button(row![icons::folder(), "Files"])
@@ -468,11 +540,11 @@ fn left_menu<'a>(rustmote: &Rustmote) -> Element<'a, Message> {
         .padding(5)
         .width(100),
     )
-    .max_width(rustmote.menu_width)
+    .max_width(krustmote.menu_width)
     .into()
 }
 
-fn remote<'a>(rustmote: &Rustmote) -> Element<'a, Message> {
+fn remote<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
     let red = Color::from_rgb8(255, 0, 0);
     container(
         column![
@@ -488,7 +560,7 @@ fn remote<'a>(rustmote: &Rustmote) -> Element<'a, Message> {
                     )))
                     .width(40)
                     .height(40),
-                if rustmote.kodi_status.muted {
+                if krustmote.kodi_status.muted {
                     button(icons::volume_off().style(red).size(32))
                         .height(40)
                         .width(40)
