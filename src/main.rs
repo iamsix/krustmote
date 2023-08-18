@@ -9,8 +9,10 @@ use iced::widget::{
 
 use iced::{subscription, window, Application, Color, Command, Element, Event, Length, Settings};
 
+use ::image as imagelib;
 use reqwest;
 use urlencoding;
+
 
 mod client;
 mod icons;
@@ -38,7 +40,7 @@ struct ItemList {
     visible_count: u32,
 }
 
-const ITEM_HEIGHT: u32 = 50;
+const ITEM_HEIGHT: u32 = 55;
 
 struct KodiStatus {
     now_playing: bool,
@@ -58,7 +60,6 @@ pub struct ListData {
     bottom_left: Option<String>,  // container/element?
     bottom_right: Option<String>, // container/element?
     image: Option<image::Handle>,
-    // picture: ???? - not sure if URL or actual image data
 }
 
 #[derive(Debug, Clone)]
@@ -126,6 +127,8 @@ impl Application for Krustmote {
             }
 
             Message::WindowResized(height) => {
+                // Window height instead of scrollable height is a few extra items
+                // but getting the scrollable height is more tedious for little gain.
                 self.item_list.visible_count = (height / ITEM_HEIGHT) + 2;
             }
 
@@ -159,6 +162,11 @@ impl Application for Krustmote {
 
                 client::Event::UpdateDirList(dirlist) => {
                     // TODO = push this to a different fn
+                    self.item_list.filter = "".to_string();
+                    self.item_list.start_offset = 0;
+
+                    // impl ListData and make new() function. batch command creation of them?
+
                     let mut files: Vec<ListData> = Vec::new();
                     for file in dirlist {
                         // dbg!(&file);
@@ -208,11 +216,18 @@ impl Application for Krustmote {
                         })
                     }
                     self.item_list.data = files;
+
+                    return scrollable::snap_to(
+                        Id::new("files"),
+                        scrollable::RelativeOffset { x: 0.0, y: 0.0 },
+                    );
                 }
 
                 client::Event::UpdateSources(sources) => {
-                    self.item_list.filter = "".to_string();
                     // TODO: move this to a different fn
+                    self.item_list.filter = "".to_string();
+                    self.item_list.start_offset = 0;
+
                     let mut files: Vec<ListData> = Vec::new();
                     files.push(ListData {
                         label: String::from("- Database"),
@@ -239,6 +254,11 @@ impl Application for Krustmote {
                         })
                     }
                     self.item_list.data = files;
+
+                    return scrollable::snap_to(
+                        Id::new("files"),
+                        scrollable::RelativeOffset { x: 0.0, y: 0.0 },
+                    );
                 }
 
                 client::Event::UpdatePlayerProps(player_props) => match player_props {
@@ -248,7 +268,7 @@ impl Application for Krustmote {
                     Some(props) => {
                         if !self.kodi_status.now_playing {
                             self.kodi_status.now_playing = true;
-                            let player_id = props.player_id.unwrap();
+                            let player_id = props.player_id.expect("player_id should exist");
                             return Command::perform(async {}, move |_| {
                                 Message::KodiReq(KodiCommand::PlayerGetPlayingItem(player_id))
                             });
@@ -277,30 +297,17 @@ impl Application for Krustmote {
             },
             Message::KodiReq(command) => match &mut self.state {
                 State::Connected(connection) => {
-                    let mut item_command = false;
                     match &command {
                         &KodiCommand::GetSources(_) => {
-                            self.item_list.start_offset = 0;
                             self.item_list.breadcrumb.clear();
                             self.item_list.breadcrumb.push(command.clone());
-                            item_command = true;
                         }
                         &KodiCommand::GetDirectory { .. } => {
-                            self.item_list.start_offset = 0;
                             self.item_list.breadcrumb.push(command.clone());
-                            item_command = true;
                         }
-
                         _ => {}
                     }
                     connection.send(command);
-
-                    if item_command {
-                        return scrollable::snap_to(
-                            Id::new("files"),
-                            scrollable::RelativeOffset { x: 0.0, y: 0.0 },
-                        );
-                    }
                 }
                 State::Disconnected => {
                     panic!("Kodi is apparently disconnected so I can't");
@@ -379,11 +386,16 @@ impl Krustmote {
     }
 
     fn get_thumb(url: String) -> image::Handle {
+        // this should definitely be done async somehow.
         let img = reqwest::blocking::get(url);
         let img = img.unwrap();
         let img = img.bytes().unwrap();
 
-        image::Handle::from_memory(img)
+        let img = imagelib::load_from_memory(&img).unwrap();
+        let img = img.resize_to_fill(256, 128, imagelib::imageops::FilterType::Nearest);
+        let img = img.to_rgba8().to_vec();
+
+        image::Handle::from_pixels(256, 128, img)
     }
 }
 
@@ -412,6 +424,7 @@ fn center_area<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> {
     let top_space = offset * ITEM_HEIGHT;
     virtual_list.push(Space::new(10, top_space as f32).into());
 
+    let mut precount: usize = 0;
     let files = krustmote
         .item_list
         .data
@@ -422,7 +435,10 @@ fn center_area<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> {
                 .contains(&krustmote.item_list.filter.to_lowercase())
         })
         .enumerate()
-        .filter(|&(i, _)| i as u32 >= offset && i as u32 <= count)
+        .filter(|&(i, _)| {
+            precount = i;
+            i as u32 >= offset && i as u32 <= count
+        })
         .map(|(_, data)| make_listitem(data))
         .map(Element::from)
         .into_iter();
@@ -430,19 +446,7 @@ fn center_area<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> {
     virtual_list.extend(files);
 
     let bottom_space = if !krustmote.item_list.filter.is_empty() {
-        // unfortunately we have to filter this twice
-        // since the second enumerated/range filter changes the len()
-        krustmote
-            .item_list
-            .data
-            .iter()
-            .filter(|&x| {
-                x.label
-                    .to_lowercase()
-                    .contains(&krustmote.item_list.filter.to_lowercase())
-            })
-            .count() as u32
-            * ITEM_HEIGHT
+        precount as u32 * ITEM_HEIGHT
     } else if krustmote.item_list.data.len() > 0 {
         krustmote.item_list.data.len() as u32 * ITEM_HEIGHT
     } else {
@@ -506,19 +510,20 @@ fn make_listitem(data: &ListData) -> Button<Message> {
         if data.play_count.unwrap_or(0) > 0 {
             icons::done()
         } else {
-            text("")
+            text(" ")
         },
         column![
-            data.label.as_str(),
+            text(data.label.as_str()).size(14).height(18),
+            text("").size(10),
             row![
                 match &data.bottom_left {
-                    Some(d) => d.as_str(),
-                    None => "",
+                    Some(d) => text(d.as_str()).size(10),
+                    None => text(""),
                 },
                 Space::new(Length::Fill, Length::Shrink),
                 match &data.bottom_right {
-                    Some(d) => d.as_str(),
-                    None => "",
+                    Some(d) => text(d.as_str()).size(10),
+                    None => text(""),
                 },
             ]
         ]

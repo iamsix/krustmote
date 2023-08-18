@@ -37,7 +37,6 @@ macro_rules! rpc_obj_params {
     }};
 }
 
-
 #[derive(Debug, Clone)]
 pub struct Connection(Sender<KodiCommand>);
 
@@ -202,14 +201,14 @@ async fn handle_kodi_command(message: KodiCommand, client: &mut Client) -> Resul
     match message {
         KodiCommand::GetDirectory {
             path,
-            media_type: mediatype,
+            media_type,
         } => {
             let response: Map<String, Value> = client
                 .request(
                     "Files.GetDirectory",
                     rpc_params![
                         path,
-                        mediatype.as_str(),
+                        media_type.as_str(),
                         FILE_PROPS,
                         DirSort {
                             method: "date",
