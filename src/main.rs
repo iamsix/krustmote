@@ -13,6 +13,8 @@ use ::image as imagelib;
 use reqwest;
 use urlencoding;
 
+use std::sync::{Arc, RwLock};
+use std::thread;
 
 mod client;
 mod icons;
@@ -51,7 +53,7 @@ struct KodiStatus {
     duration: KodiTime,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ListData {
     label: String,
     on_click: Message,
@@ -59,7 +61,7 @@ pub struct ListData {
     // content_area: Option<String>, // container/element instead?
     bottom_left: Option<String>,  // container/element?
     bottom_right: Option<String>, // container/element?
-    image: Option<image::Handle>,
+    image: Arc<RwLock<Option<image::Handle>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -180,15 +182,22 @@ impl Application for Krustmote {
                             file.label
                         };
 
+                        let lock = Arc::new(RwLock::new(None));
+                        let c_lock = Arc::clone(&lock);
+
                         // Temporary to test image loading
                         let pic = if file.type_ == VideoType::Episode && file.art.thumb.is_some() {
                             let thumb = file.art.thumb.unwrap();
                             let thumb = urlencoding::encode(thumb.as_str());
                             let url = format!("http://192.168.1.22:8080/image/{}", thumb);
-                            Some(Krustmote::get_thumb(url))
+                            thread::spawn( move || {
+                                let mut lock = c_lock.write().unwrap();
+                                *lock = Krustmote::get_thumb(url);
+                                });
+                            lock
                         } else {
-                            None
-                        };
+                            Arc::new(RwLock::new(None))
+                        }; 
 
                         files.push(ListData {
                             label,
@@ -214,8 +223,12 @@ impl Application for Krustmote {
                             },
                             image: pic,
                         })
+
+                       // pic.await;
                     }
                     self.item_list.data = files;
+
+                    //Command::perform(future, f)
 
                     return scrollable::snap_to(
                         Id::new("files"),
@@ -238,7 +251,7 @@ impl Application for Krustmote {
                         play_count: None,
                         bottom_right: None,
                         bottom_left: None,
-                        image: None,
+                        image: Arc::new(RwLock::new(None)),
                     });
                     for source in sources {
                         files.push(ListData {
@@ -250,7 +263,7 @@ impl Application for Krustmote {
                             play_count: None,
                             bottom_right: None,
                             bottom_left: None,
-                            image: None,
+                            image: Arc::new(RwLock::new(None)),
                         })
                     }
                     self.item_list.data = files;
@@ -385,17 +398,17 @@ impl Krustmote {
         command.unwrap()
     }
 
-    fn get_thumb(url: String) -> image::Handle {
-        // this should definitely be done async somehow.
-        let img = reqwest::blocking::get(url);
-        let img = img.unwrap();
-        let img = img.bytes().unwrap();
+    fn get_thumb(url: String) -> Option<image::Handle> {
+        // Terrible err handling for now
+        let Ok(img) = reqwest::blocking::get(url) else { return None};
+        let Ok(img) = img.bytes() else { return None};
 
-        let img = imagelib::load_from_memory(&img).unwrap();
+        let Ok(img) = imagelib::load_from_memory(&img) else { return None};
+
         let img = img.resize_to_fill(256, 128, imagelib::imageops::FilterType::Nearest);
         let img = img.to_rgba8().to_vec();
 
-        image::Handle::from_pixels(256, 128, img)
+        Some(image::Handle::from_pixels(256, 128, img))
     }
 }
 
@@ -499,10 +512,14 @@ fn make_listitem(data: &ListData) -> Button<Message> {
     //    and there's no 'fling' anyway
     //
     // TODO: I should specify label heights here to ensure no line wrapping/etc
+    let image_data = data.image.try_read();
     Button::new(row![
-        if data.image.is_some() {
-            let img = data.image.clone().unwrap();
-            container(image(img).height(45))
+        if let Ok(img) = image_data {
+            if img.is_some() {
+                container(image(img.as_ref().unwrap().clone()).height(45))
+            } else {
+                container("")
+            }
         } else {
             container("")
         },
