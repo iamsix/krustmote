@@ -13,18 +13,18 @@ use ::image as imagelib;
 use reqwest;
 use urlencoding;
 
+use std::error::Error;
 use std::sync::{Arc, OnceLock};
-use std::thread;
+use tokio;
 
 mod client;
 mod icons;
 mod koditypes;
 
 use koditypes::*;
-//mod recycler;
 
 fn main() -> iced::Result {
-    let _ = BLANK_IMAGE.set(image::Handle::from_pixels(256, 128, [0;131072]));
+    let _ = BLANK_IMAGE.set(image::Handle::from_pixels(256, 128, [0; 131072]));
     Krustmote::run(Settings::default())
 }
 
@@ -170,6 +170,7 @@ impl Application for Krustmote {
                     self.item_list.start_offset = 0;
 
                     // impl ListData and make new() function. batch command creation of them?
+                    //let handle = Handle::current();
 
                     let mut files: Vec<ListData> = Vec::new();
                     for file in dirlist {
@@ -192,8 +193,13 @@ impl Application for Krustmote {
                             let thumb = file.art.thumb.unwrap();
                             let thumb = urlencoding::encode(thumb.as_str());
                             let url = format!("http://192.168.1.22:8080/image/{}", thumb);
-                            thread::spawn(move || {
-                                let _ = c_lock.set(Krustmote::get_thumb(url));
+                            tokio::spawn(async move {
+                                let res = Krustmote::get_thumb(url).await;
+                                if let Ok(res) = res {
+                                    let _ = c_lock.set(res);
+                                } else {
+                                    dbg!(res.err());
+                                };
                             });
                             lock
                         } else {
@@ -399,17 +405,17 @@ impl Krustmote {
         command.unwrap()
     }
 
-    fn get_thumb(url: String) -> image::Handle {
+    async fn get_thumb(url: String) -> Result<image::Handle, Box<dyn Error>> {
         // Terrible err handling for now
         //let blank = image::Handle::from_pixels(256, 128, [0]);
-        let Ok(img) = reqwest::blocking::get(url) else { return BLANK_IMAGE.get().unwrap().clone()};
-        let Ok(img) = img.bytes() else {return BLANK_IMAGE.get().unwrap().clone()};
+        let img = reqwest::get(url).await?;
+        let img = img.bytes().await?;
 
-        let Ok(img) = imagelib::load_from_memory(&img) else { return BLANK_IMAGE.get().unwrap().clone()};
+        let img = imagelib::load_from_memory(&img)?;
         let img = img.resize_to_fill(256, 128, imagelib::imageops::FilterType::Nearest);
         let img = img.to_rgba8().to_vec();
 
-        image::Handle::from_pixels(256, 128, img)
+        Ok(image::Handle::from_pixels(256, 128, img))
     }
 }
 
@@ -518,7 +524,7 @@ fn make_listitem(data: &ListData) -> Button<Message> {
         if let Some(img) = image_data {
             container(image(img.clone()).height(45))
         } else {
-           // let blank = image::Handle::from_pixels(256, 128, [0; 131072]);
+            // let blank = image::Handle::from_pixels(256, 128, [0; 131072]);
             container(image(BLANK_IMAGE.get().unwrap().clone()).height(45))
         },
         // Watched will proabbly go in picture area - for now just this icon or not
