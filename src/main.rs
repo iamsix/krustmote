@@ -223,76 +223,11 @@ impl Application for Krustmote {
                 return Command::perform(async {}, |_| Message::KodiReq(cmd));
             }
 
-            Message::ServerStatus(event) => match event {
-                client::Event::Connected(connection) => {
-                    self.state = State::Connected(connection);
+            Message::ServerStatus(event) => {
+                if let Some(value) = self.handle_server_event(event) {
+                    return value;
                 }
-
-                client::Event::Disconnected => {
-                    self.state = State::Disconnected;
-                }
-
-                client::Event::UpdateDirList(dirlist) => {
-                    if let Some(value) = self.make_itemlist(dirlist) {
-                        return value;
-                    }
-                }
-
-                client::Event::UpdateSources(sources) => {
-                    if let Some(value) = self.make_sources(sources) {
-                        return value;
-                    }
-                }
-
-                client::Event::UpdatePlayerProps(player_props) => match player_props {
-                    None => {
-                        self.kodi_status.now_playing = false;
-                        self.kodi_status.active_player_id = None;
-                    }
-                    Some(props) => {
-                        self.kodi_status.active_player_id = props.player_id;
-                        if !self.kodi_status.now_playing {
-                            self.kodi_status.now_playing = true;
-                            let player_id = props.player_id.expect("player_id should exist");
-                            return Command::perform(async {}, move |_| {
-                                Message::KodiReq(KodiCommand::PlayerGetPlayingItem(player_id))
-                            });
-                        }
-                        self.kodi_status.now_playing = true;
-                        self.kodi_status.paused = props.speed == 0.0;
-                        if props.currentsubtitle.is_some() {
-                            self.kodi_status.subtitles = props.subtitles;
-                            self.kodi_status.current_subtitle = props.currentsubtitle;
-                        }
-                        self.kodi_status.subtitles_enabled = props.subtitleenabled;
-
-                        if !self.slider_grabbed {
-                            self.kodi_status.play_time = props.time;
-                        }
-                        self.kodi_status.duration = props.totaltime;
-                    }
-                },
-
-                client::Event::UpdateKodiAppStatus(status) => {
-                    self.kodi_status.muted = status.muted;
-                }
-
-                client::Event::UpdatePlayingItem(item) => {
-                    if item.type_ == VideoType::Episode {
-                        self.kodi_status.playing_title = format!(
-                            "{} - S{:02}E{:02} - {}",
-                            item.showtitle.unwrap_or("".to_string()),
-                            item.season.unwrap_or(0),
-                            item.episode.unwrap_or(0),
-                            item.title,
-                        )
-                    } else {
-                        self.kodi_status.playing_title = item.label;
-                    }
-                }
-
-                client::Event::None => {}
-            },
+            }
             Message::KodiReq(command) => match &mut self.state {
                 State::Connected(connection) => {
                     match &command {
@@ -394,6 +329,10 @@ impl Krustmote {
         let mut files: Vec<ListData> = Vec::new();
         for file in dirlist {
             // dbg!(&file);
+
+            let (pic_url, w, h) = get_art_url(&file);
+            let pic = get_art(&sem, pic_url, h, w);
+
             let label = if file.type_ == VideoType::Episode {
                 format!(
                     "{} - S{:02}E{:02} - {}",
@@ -406,47 +345,16 @@ impl Krustmote {
                 file.label
             };
 
-            // Temporary to test image loading
-            let (pic_url, w, h) = if file.type_ == VideoType::Episode && file.art.thumb.is_some() {
-                let thumb = file.art.thumb.unwrap();
-                let thumb = urlencoding::encode(thumb.as_str());
-                (
-                    format!("http://192.168.1.22:8080/image/{}", thumb),
-                    192,
-                    108,
-                )
-            } else if file.art.poster.is_some() {
-                let poster = file.art.poster.unwrap();
-                let poster = urlencoding::encode(poster.as_str());
-                (
-                    format!("http://192.168.1.22:8080/image/{}", poster),
-                    80,
-                    120,
-                )
+            let bottom_left = if file.size > 1_073_741_824 {
+                Some(format!(
+                    "{:.2} GB",
+                    (file.size as f64 / 1024.0 / 1024.0 / 1024.0)
+                ))
+            } else if file.size > 0 {
+                Some(format!("{:.1} MB", (file.size as f64 / 1024.0 / 1024.0)))
             } else {
-                ("".to_string(), 0, 0)
+                None
             };
-
-            let lock = Arc::new(OnceLock::new());
-            let c_lock = Arc::clone(&lock);
-            // This semaphore limits it to 10 hits on the server at a time.
-            let permit = Arc::clone(&sem).acquire_owned();
-
-            let pic = if !pic_url.is_empty() {
-                tokio::spawn(async move {
-                    let _permit = permit.await;
-                    let res = Krustmote::get_pic(pic_url, h, w).await;
-                    if let Ok(res) = res {
-                        let _ = c_lock.set(res);
-                    } else {
-                        dbg!(res.err());
-                    };
-                });
-                lock
-            } else {
-                Arc::new(OnceLock::new())
-            };
-
             files.push(ListData {
                 label,
                 on_click: Message::KodiReq(match file.filetype.as_str() {
@@ -459,16 +367,7 @@ impl Krustmote {
                 }),
                 play_count: file.playcount,
                 bottom_right: Some(file.lastmodified),
-                bottom_left: if file.size > 1_073_741_824 {
-                    Some(format!(
-                        "{:.2} GB",
-                        (file.size as f64 / 1024.0 / 1024.0 / 1024.0)
-                    ))
-                } else if file.size > 0 {
-                    Some(format!("{:.1} MB", (file.size as f64 / 1024.0 / 1024.0)))
-                } else {
-                    None
-                },
+                bottom_left,
                 image: pic,
             })
 
@@ -515,4 +414,124 @@ impl Krustmote {
             scrollable::RelativeOffset { x: 0.0, y: 0.0 },
         ));
     }
+
+    fn handle_server_event(&mut self, event: client::Event) -> Option<Command<Message>> {
+        match event {
+            client::Event::Connected(connection) => {
+                self.state = State::Connected(connection);
+            }
+
+            client::Event::Disconnected => {
+                self.state = State::Disconnected;
+            }
+
+            client::Event::UpdateDirList(dirlist) => {
+                if let Some(value) = self.make_itemlist(dirlist) {
+                    return Some(value);
+                }
+            }
+
+            client::Event::UpdateSources(sources) => {
+                if let Some(value) = self.make_sources(sources) {
+                    return Some(value);
+                }
+            }
+
+            client::Event::UpdatePlayerProps(player_props) => match player_props {
+                None => {
+                    self.kodi_status.now_playing = false;
+                    self.kodi_status.active_player_id = None;
+                }
+                Some(props) => {
+                    self.kodi_status.active_player_id = props.player_id;
+                    if !self.kodi_status.now_playing {
+                        self.kodi_status.now_playing = true;
+                        let player_id = props.player_id.expect("player_id should exist");
+                        return Some(Command::perform(async {}, move |_| {
+                            Message::KodiReq(KodiCommand::PlayerGetPlayingItem(player_id))
+                        }));
+                    }
+                    self.kodi_status.now_playing = true;
+                    self.kodi_status.paused = props.speed == 0.0;
+                    if props.currentsubtitle.is_some() {
+                        self.kodi_status.subtitles = props.subtitles;
+                        self.kodi_status.current_subtitle = props.currentsubtitle;
+                    }
+                    self.kodi_status.subtitles_enabled = props.subtitleenabled;
+
+                    if !self.slider_grabbed {
+                        self.kodi_status.play_time = props.time;
+                    }
+                    self.kodi_status.duration = props.totaltime;
+                }
+            },
+
+            client::Event::UpdateKodiAppStatus(status) => {
+                self.kodi_status.muted = status.muted;
+            }
+
+            client::Event::UpdatePlayingItem(item) => {
+                if item.type_ == VideoType::Episode {
+                    self.kodi_status.playing_title = format!(
+                        "{} - S{:02}E{:02} - {}",
+                        item.showtitle.unwrap_or("".to_string()),
+                        item.season.unwrap_or(0),
+                        item.episode.unwrap_or(0),
+                        item.title,
+                    )
+                } else {
+                    self.kodi_status.playing_title = item.label;
+                }
+            }
+
+            client::Event::None => {}
+        }
+        None
+    }
+}
+
+fn get_art(sem: &Arc<Semaphore>, pic_url: String, h: u32, w: u32) -> Arc<OnceLock<image::Handle>> {
+    let lock = Arc::new(OnceLock::new());
+    let c_lock = Arc::clone(&lock);
+    // This semaphore limits it to 10 hits on the server at a time.
+    let permit = Arc::clone(sem).acquire_owned();
+
+    let pic = if !pic_url.is_empty() {
+        tokio::spawn(async move {
+            let _permit = permit.await;
+            let res = Krustmote::get_pic(pic_url, h, w).await;
+            if let Ok(res) = res {
+                let _ = c_lock.set(res);
+            } else {
+                dbg!(res.err());
+            };
+        });
+        lock
+    } else {
+        Arc::new(OnceLock::new())
+    };
+    pic
+}
+
+fn get_art_url(file: &DirList) -> (String, u32, u32) {
+    let (pic_url, w, h) = if file.type_ == VideoType::Episode && file.art.thumb.is_some() {
+        let thumb = file.art.thumb.as_ref().unwrap();
+        let thumb = urlencoding::encode(thumb.as_str());
+        (
+            format!("http://192.168.1.22:8080/image/{}", thumb),
+            192,
+            108,
+        )
+    } else if file.art.poster.is_some() {
+        let poster = file.art.poster.as_ref().unwrap();
+        let poster = urlencoding::encode(poster.as_str());
+        (
+            format!("http://192.168.1.22:8080/image/{}", poster),
+            80,
+            120,
+        )
+    } else {
+        ("".to_string(), 0, 0)
+    };
+    (pic_url, w, h)
 }
