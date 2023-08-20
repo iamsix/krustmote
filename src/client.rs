@@ -303,6 +303,22 @@ async fn handle_kodi_command(message: KodiCommand, client: &mut Client) -> Resul
             Ok(Event::UpdatePlayingItem(playing_item))
         }
 
+        KodiCommand::PlayerSeek(player_id, time) => {
+            #[derive(Serialize)]
+            struct Time {
+                time: KodiTime,
+            }
+            let objtime = Time { time };
+            let _response: Value = client.request(
+                "Player.Seek",
+                rpc_obj_params!("playerid"=player_id, "value"=objtime)
+            ).await?;
+
+            // This returns percent/timestamp/duration but we don't really need them
+            // because we're scraping every second anyway.
+            Ok(Event::None)
+        }
+
         // Debug command
         KodiCommand::PlayerGetActivePlayers => {
             let response: Value = client

@@ -1,4 +1,5 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
 
 pub const FILE_PROPS: [&'static str; 20] = [
     "title",
@@ -74,17 +75,28 @@ pub const PLAYING_ITEM_PROPS: [&'static str; 28] = [
     "uniqueid",
 ];
 
+fn treat_error_as_none<'de, T, D>(deserializer: D) -> Result<Option<T>, D::Error>
+    where T: Deserialize<'de>,
+          D: Deserializer<'de>
+{
+    let value: Value = Deserialize::deserialize(deserializer)?;
+    Ok(T::deserialize(value).ok())
+}
+
 #[derive(Deserialize, Clone, Debug)]
 pub struct PlayerProps {
     pub speed: f64,
     pub time: KodiTime,
     pub totaltime: KodiTime,
     pub player_id: Option<u8>,
+    // #[serde(deserialize_with = "treat_error_as_none")]
     // currentaudiostream: AudioStream,
     // audiostreams: Vec[AudioStream],
     pub canseek: bool,
-    // pub currentsubtitle: Subtitle,
-    // pub subtitles: Vec<Subtitle>,
+    #[serde(deserialize_with = "treat_error_as_none")]
+    pub currentsubtitle: Option<Subtitle>, // Option? otherwise it's empty
+    pub subtitles: Vec<Subtitle>,
+    // #[serde(deserialize_with = "treat_error_as_none")]
     // pub currentvideostream: VideoStream,
     // pub videostreams: Vec<VideoStream>,
     // playlistid: u8,
@@ -106,17 +118,17 @@ pub struct PlayerProps {
 //     width: u16,
 // }
 
-// #[derive(Deserialize, Clone, Debug)]
-// pub struct Subtitle {
-//     index: u8,
-//     isdefault: bool,
-//     isforced: bool,
-//     isimpaired: bool,
-//     language: String,
-//     name: String,
-// }
+#[derive(Deserialize, Clone, Debug)]
+pub struct Subtitle {
+    index: u8,
+    isdefault: bool,
+    isforced: bool,
+    isimpaired: bool,
+    language: String,
+    name: String,
+}
 
-#[derive(Deserialize, Clone, Debug, Default)]
+#[derive(Deserialize, Serialize, Clone, Debug, Default)]
 pub struct KodiTime {
     pub hours: u8,
     // this SHOULD be a u16
@@ -172,9 +184,8 @@ pub enum KodiCommand {
     },
     InputExecuteAction(&'static str),
     // ToggleMute,
-    //PlayerPlayPause,
-    //PlayerStop,
     GUIActivateWindow(&'static str),
+    PlayerSeek(u8, KodiTime),
 
     // Not sure if I actually need these ones from the front end. (they're used by back end)
     PlayerGetProperties, // Possibly some variant of this one to get subs/audio/video
@@ -246,9 +257,9 @@ pub struct DirList {
 pub enum VideoType {
     Episode,
     Movie,
+    TVShow,
     #[default]
     Unknown,
-    TVShow,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -281,6 +292,7 @@ pub struct PlayingItem {
     // tagline: String,
     // writer: Struct // TODO!
     // year: u16,
+    // These might not need to be Options - it seems to always return some default
     pub showtitle: Option<String>,
     pub episode: Option<i16>,
     pub season: Option<i16>,

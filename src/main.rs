@@ -19,6 +19,8 @@ use std::error::Error;
 use std::sync::{Arc, OnceLock};
 use tokio;
 
+use chrono;
+
 mod client;
 mod icons;
 mod koditypes;
@@ -192,7 +194,9 @@ impl Application for Krustmote {
 
             Message::SliderReleased => {
                 self.slider_grabbed = false;
-                println!("Slider release: {}", self.kodi_status.play_time)
+                println!("Slider release: {}", self.kodi_status.play_time);
+                let cmd = KodiCommand::PlayerSeek(1, self.kodi_status.play_time.clone());
+                return Command::perform(async {}, |_| Message::KodiReq(cmd));
             }
 
             Message::ServerStatus(event) => match event {
@@ -422,6 +426,12 @@ impl Application for Krustmote {
     }
 
     fn view(&self) -> Element<Message> {
+        let duration = self.kodi_status.duration.total_seconds();
+        let play_time = self.kodi_status.play_time.total_seconds();
+        let timeleft = duration.saturating_sub(play_time);
+        let now = chrono::offset::Local::now();
+        let end = now + chrono::Duration::seconds(timeleft as i64);
+        let end = end.format("%I:%M %p");
         let content = column![
             // Top Bar thing
             top_bar(self),
@@ -438,15 +448,12 @@ impl Application for Krustmote {
             if self.kodi_status.now_playing {
                 container(
                     row![
+                        Space::new(5, 5),
                         column![
-                            Slider::new(
-                                0..=self.kodi_status.duration.total_seconds(),
-                                self.kodi_status.play_time.total_seconds(),
-                                Message::SliderChanged
-                            )
-                            .on_release(Message::SliderReleased),
+                            Slider::new(0..=duration, play_time, Message::SliderChanged)
+                                .on_release(Message::SliderReleased),
                             text(format!(
-                                "{} / {}",
+                                "{} / {} ({end})",
                                 self.kodi_status.play_time, self.kodi_status.duration
                             )),
                             text(self.kodi_status.playing_title.clone()),
