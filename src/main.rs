@@ -4,13 +4,15 @@ use iced::theme::{self, Theme};
 use iced::widget::scrollable::Id;
 // use iced::time;
 use iced::widget::{
-    button, column, container, image, row, scrollable, text, text_input, Button, Slider, Space, Rule
+    button, column, container, image, row, scrollable, text, text_input, Button, Rule, Slider,
+    Space,
 };
 
 use iced::{subscription, window, Application, Color, Command, Element, Event, Length, Settings};
 
 use ::image as imagelib;
 use reqwest;
+use tokio::sync::Semaphore;
 use urlencoding;
 
 use std::error::Error;
@@ -207,8 +209,7 @@ impl Application for Krustmote {
                     self.item_list.filter = "".to_string();
                     self.item_list.start_offset = 0;
 
-                    // impl ListData and make new() function. batch command creation of them?
-                    //let handle = Handle::current();
+                    let sem = Arc::new(Semaphore::new(10));
 
                     let mut files: Vec<ListData> = Vec::new();
                     for file in dirlist {
@@ -224,9 +225,6 @@ impl Application for Krustmote {
                         } else {
                             file.label
                         };
-
-                        let lock = Arc::new(OnceLock::new());
-                        let c_lock = Arc::clone(&lock);
 
                         // Temporary to test image loading
                         let (pic_url, w, h) =
@@ -250,8 +248,14 @@ impl Application for Krustmote {
                                 ("".to_string(), 0, 0)
                             };
 
+                        let lock = Arc::new(OnceLock::new());
+                        let c_lock = Arc::clone(&lock);
+                        // This semaphore limits it to 10 hits on the server at a time.
+                        let permit = Arc::clone(&sem).acquire_owned();
+
                         let pic = if !pic_url.is_empty() {
                             tokio::spawn(async move {
+                                let _permit = permit.await;
                                 let res = Krustmote::get_pic(pic_url, h, w).await;
                                 if let Ok(res) = res {
                                     let _ = c_lock.set(res);
@@ -482,12 +486,11 @@ impl Application for Krustmote {
                     row![
                         text("Subtitles").height(40),
                         Space::new(Length::Fill, 10),
-
-                        // This is the only place this Message is used
+                        // This is likely the only place this Message is used
                         // however it's the only way I can think to do this
                         button("Download").on_press(Message::HideModalAndKodiReq(
                             KodiCommand::GUIActivateWindow("subtitlesearch")
-                        )), 
+                        )),
                     ],
                     Rule::horizontal(5),
                     row![
