@@ -199,10 +199,7 @@ async fn poll_player_status(client: &mut Client) -> Result<Event, Error> {
 
 async fn handle_kodi_command(message: KodiCommand, client: &mut Client) -> Result<Event, Error> {
     match message {
-        KodiCommand::GetDirectory {
-            path,
-            media_type,
-        } => {
+        KodiCommand::GetDirectory { path, media_type } => {
             let response: Map<String, Value> = client
                 .request(
                     "Files.GetDirectory",
@@ -270,6 +267,17 @@ async fn handle_kodi_command(message: KodiCommand, client: &mut Client) -> Resul
         KodiCommand::InputExecuteAction(action) => {
             let response: String = client
                 .request("Input.ExecuteAction", rpc_params![action])
+                .await?;
+            if response != "OK" {
+                dbg!(response);
+            };
+
+            Ok(Event::None)
+        }
+
+        KodiCommand::GUIActivateWindow(window) => {
+            let response: String = client
+                .request("GUI.ActivateWindow", rpc_params![window])
                 .await?;
             if response != "OK" {
                 dbg!(response);

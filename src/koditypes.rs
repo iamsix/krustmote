@@ -137,6 +137,20 @@ impl std::fmt::Display for KodiTime {
     }
 }
 
+impl KodiTime {
+    pub fn total_seconds(&self) -> u32 {
+        self.seconds as u32 + self.minutes as u32 * 60 + self.hours as u32 * 60 * 60
+    }
+
+    pub fn from_seconds(&mut self, seconds: u32) {
+        self.hours = (seconds / 60 / 60) as u8;
+        self.minutes = ((seconds / 60).saturating_sub(self.hours as u32 * 60)) as u8;
+        self.seconds = seconds
+            .saturating_sub(self.minutes as u32 * 60)
+            .saturating_sub(self.hours as u32 * 60 * 60) as u8;
+    }
+}
+
 #[derive(Deserialize, Debug, Clone)]
 pub struct KodiAppStatus {
     pub muted: bool,
@@ -158,9 +172,9 @@ pub enum KodiCommand {
     },
     InputExecuteAction(&'static str),
     // ToggleMute,
-    // PlayerPlayPause,
-    // PlayerStop,
-    // GUIActivateWindow(String),
+    //PlayerPlayPause,
+    //PlayerStop,
+    GUIActivateWindow(&'static str),
 
     // Not sure if I actually need these ones from the front end. (they're used by back end)
     PlayerGetProperties, // Possibly some variant of this one to get subs/audio/video
@@ -220,16 +234,19 @@ pub struct DirList {
     pub title: Option<String>,
     pub lastmodified: String,
     pub size: u64,
+    pub season: Option<i16>,
+    pub episode: Option<i16>,
     pub playcount: Option<u16>,
     #[serde(rename = "type")]
     pub type_: VideoType, // Should be enum from string
 }
 
-#[derive(Deserialize, Debug, Clone, PartialEq)]
+#[derive(Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum VideoType {
     Episode,
     Movie,
+    #[default]
     Unknown,
     TVShow,
 }
@@ -264,13 +281,12 @@ pub struct PlayingItem {
     // tagline: String,
     // writer: Struct // TODO!
     // year: u16,
-    // showtitle: String,
-    // episode: i16,
-    // season: i16,
+    pub showtitle: Option<String>,
+    pub episode: Option<i16>,
+    pub season: Option<i16>,
 
     // id: Option<i16> // ???
-
-    // this is the "episode" "movie" etc type - not filetype/MediaType
-    // type_: String, // Should be enum from string
+    #[serde(rename = "type")]
+    pub type_: VideoType,
     // there's also ignored field 'userrating' but I think it's useless.
 }

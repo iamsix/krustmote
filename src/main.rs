@@ -1,10 +1,10 @@
 use iced::executor;
 use iced::font;
-use iced::theme::Theme;
+use iced::theme::{self, Theme};
 use iced::widget::scrollable::Id;
 // use iced::time;
 use iced::widget::{
-    button, column, container, image, row, scrollable, text, text_input, Button, Space,
+    button, column, container, image, row, scrollable, text, text_input, Button, Slider, Space, Rule
 };
 
 use iced::{subscription, window, Application, Color, Command, Element, Event, Length, Settings};
@@ -20,11 +20,14 @@ use tokio;
 mod client;
 mod icons;
 mod koditypes;
+mod modal;
+
+use modal::Modal;
 
 use koditypes::*;
 
 fn main() -> iced::Result {
-    let _ = BLANK_IMAGE.set(image::Handle::from_pixels(256, 128, [0; 131072]));
+    let _ = BLANK_IMAGE.set(image::Handle::from_pixels(80, 120, [0; 38_400]));
     Krustmote::run(Settings::default())
 }
 
@@ -33,6 +36,8 @@ struct Krustmote {
     menu_width: u16,
     kodi_status: KodiStatus,
     item_list: ItemList,
+    slider_grabbed: bool,
+    modal: Modals,
 }
 
 struct ItemList {
@@ -41,6 +46,14 @@ struct ItemList {
     filter: String,
     start_offset: u32,
     visible_count: u32,
+}
+
+#[derive(Debug, Clone)]
+enum Modals {
+    None,
+    Subtitles,
+    _Video,
+    _Audio,
 }
 
 const ITEM_HEIGHT: u32 = 55;
@@ -76,6 +89,10 @@ enum Message {
     FilterFileList(String),
     FontLoaded(Result<(), font::Error>),
     WindowResized(u32),
+    SliderChanged(u32),
+    SliderReleased,
+    HideModalAndKodiReq(KodiCommand),
+    ShowModal(Modals),
 }
 
 enum State {
@@ -112,6 +129,8 @@ impl Application for Krustmote {
                 menu_width: 150,
                 kodi_status,
                 item_list,
+                slider_grabbed: false,
+                modal: Modals::None,
             },
             font::load(include_bytes!("../fonts/MaterialIcons-Regular.ttf").as_slice())
                 .map(Message::FontLoaded),
@@ -128,6 +147,15 @@ impl Application for Krustmote {
             Message::ToggleLeftMenu => {
                 // TODO : Fancy animation by subtracting until 0 etc. maybe.
                 self.menu_width = if self.menu_width == 0 { 150 } else { 0 };
+            }
+
+            Message::HideModalAndKodiReq(cmd) => {
+                self.modal = Modals::None;
+                return Command::perform(async {}, |_| Message::KodiReq(cmd));
+            }
+
+            Message::ShowModal(modal) => {
+                self.modal = modal;
             }
 
             Message::WindowResized(height) => {
@@ -155,6 +183,16 @@ impl Application for Krustmote {
                 );
             }
 
+            Message::SliderChanged(new) => {
+                self.slider_grabbed = true;
+                self.kodi_status.play_time.from_seconds(new);
+            }
+
+            Message::SliderReleased => {
+                self.slider_grabbed = false;
+                println!("Slider release: {}", self.kodi_status.play_time)
+            }
+
             Message::ServerStatus(event) => match event {
                 client::Event::Connected(connection) => {
                     self.state = State::Connected(connection);
@@ -177,9 +215,11 @@ impl Application for Krustmote {
                         // dbg!(&file);
                         let label = if file.type_ == VideoType::Episode {
                             format!(
-                                "{} - {}",
+                                "{} - S{:02}E{:02} - {}",
                                 file.showtitle.unwrap_or("".to_string()),
-                                file.label
+                                file.season.unwrap_or(0),
+                                file.episode.unwrap_or(0),
+                                file.title.unwrap_or("".to_string()),
                             )
                         } else {
                             file.label
@@ -189,12 +229,30 @@ impl Application for Krustmote {
                         let c_lock = Arc::clone(&lock);
 
                         // Temporary to test image loading
-                        let pic = if file.type_ == VideoType::Episode && file.art.thumb.is_some() {
-                            let thumb = file.art.thumb.unwrap();
-                            let thumb = urlencoding::encode(thumb.as_str());
-                            let url = format!("http://192.168.1.22:8080/image/{}", thumb);
+                        let (pic_url, w, h) =
+                            if file.type_ == VideoType::Episode && file.art.thumb.is_some() {
+                                let thumb = file.art.thumb.unwrap();
+                                let thumb = urlencoding::encode(thumb.as_str());
+                                (
+                                    format!("http://192.168.1.22:8080/image/{}", thumb),
+                                    192,
+                                    108,
+                                )
+                            } else if file.art.poster.is_some() {
+                                let poster = file.art.poster.unwrap();
+                                let poster = urlencoding::encode(poster.as_str());
+                                (
+                                    format!("http://192.168.1.22:8080/image/{}", poster),
+                                    80,
+                                    120,
+                                )
+                            } else {
+                                ("".to_string(), 0, 0)
+                            };
+
+                        let pic = if !pic_url.is_empty() {
                             tokio::spawn(async move {
-                                let res = Krustmote::get_thumb(url).await;
+                                let res = Krustmote::get_pic(pic_url, h, w).await;
                                 if let Ok(res) = res {
                                     let _ = c_lock.set(res);
                                 } else {
@@ -296,7 +354,9 @@ impl Application for Krustmote {
                         self.kodi_status.now_playing = true;
                         self.kodi_status.paused = props.speed == 0.0;
 
-                        self.kodi_status.play_time = props.time;
+                        if !self.slider_grabbed {
+                            self.kodi_status.play_time = props.time;
+                        }
                         self.kodi_status.duration = props.totaltime;
                     }
                 },
@@ -306,10 +366,16 @@ impl Application for Krustmote {
                 }
 
                 client::Event::UpdatePlayingItem(item) => {
-                    if item.title.is_empty() {
-                        self.kodi_status.playing_title = item.label;
+                    if item.type_ == VideoType::Episode {
+                        self.kodi_status.playing_title = format!(
+                            "{} - S{:02}E{:02} - {}",
+                            item.showtitle.unwrap_or("".to_string()),
+                            item.season.unwrap_or(0),
+                            item.episode.unwrap_or(0),
+                            item.title,
+                        )
                     } else {
-                        self.kodi_status.playing_title = item.title;
+                        self.kodi_status.playing_title = item.label;
                     }
                 }
 
@@ -364,20 +430,40 @@ impl Application for Krustmote {
                 remote(self),
             ]
             .height(Length::Fill),
-            // TODO: properly functioning now playing bar
+            // TODO: properly functioning now playing bar / move this elswhere.
             if self.kodi_status.now_playing {
                 container(
                     row![
-                        text(self.kodi_status.playing_title.clone()),
-                        if self.kodi_status.paused {
-                            icons::pause_clircle_filled().size(24)
-                        } else {
-                            icons::play_circle_filled().size(24)
-                        },
-                        text(format!(
-                            "{} / {}",
-                            self.kodi_status.play_time, self.kodi_status.duration
-                        ))
+                        column![
+                            Slider::new(
+                                0..=self.kodi_status.duration.total_seconds(),
+                                self.kodi_status.play_time.total_seconds(),
+                                Message::SliderChanged
+                            )
+                            .on_release(Message::SliderReleased),
+                            text(format!(
+                                "{} / {}",
+                                self.kodi_status.play_time, self.kodi_status.duration
+                            )),
+                            text(self.kodi_status.playing_title.clone()),
+                        ]
+                        .width(Length::FillPortion(60)),
+                        row![
+                            button(if !self.kodi_status.paused {
+                                icons::pause_clircle_filled().size(48)
+                            } else {
+                                icons::play_circle_filled().size(48)
+                            })
+                            .on_press(Message::KodiReq(
+                                KodiCommand::InputExecuteAction("playpause")
+                            )),
+                            button(icons::stop().size(32)).on_press(Message::KodiReq(
+                                KodiCommand::InputExecuteAction("stop")
+                            )),
+                            button("subtitles").on_press(Message::ShowModal(Modals::Subtitles))
+                        ]
+                        .width(Length::FillPortion(40))
+                        .align_items(iced::Alignment::Center)
                     ]
                     .spacing(20),
                 )
@@ -387,9 +473,45 @@ impl Application for Krustmote {
             }
         ];
 
-        let x: Element<_> = container(content).into();
+        let content: Element<_> = container(content).into();
 
-        x //.explain(Color::from_rgb8(255, 0, 0))
+        match self.modal {
+            Modals::Subtitles => {
+                // TODO: offload this subtitles dialog elswhere.
+                let modal = container(column![
+                    row![
+                        text("Subtitles").height(40),
+                        Space::new(Length::Fill, 10),
+
+                        // This is the only place this Message is used
+                        // however it's the only way I can think to do this
+                        button("Download").on_press(Message::HideModalAndKodiReq(
+                            KodiCommand::GUIActivateWindow("subtitlesearch")
+                        )), 
+                    ],
+                    Rule::horizontal(5),
+                    row![
+                        button("-").on_press(Message::KodiReq(KodiCommand::InputExecuteAction(
+                            "subtitledelayminus"
+                        ))),
+                        text(" Delay "),
+                        button("+").on_press(Message::KodiReq(KodiCommand::InputExecuteAction(
+                            "subtitledelayplus"
+                        )))
+                    ],
+                    // Subtitle adjust buttons.
+                ])
+                .width(200)
+                .padding(10)
+                .style(theme::Container::Box); // TODO: style this better.
+                Modal::new(content, modal)
+                    .on_blur(Message::ShowModal(Modals::None))
+                    .into()
+            }
+            _ => content,
+        }
+
+        //  x //.explain(Color::from_rgb8(255, 0, 0))
     }
 
     fn theme(&self) -> Self::Theme {
@@ -405,17 +527,17 @@ impl Krustmote {
         command.unwrap()
     }
 
-    async fn get_thumb(url: String) -> Result<image::Handle, Box<dyn Error>> {
+    async fn get_pic(url: String, h: u32, w: u32) -> Result<image::Handle, Box<dyn Error>> {
         // Terrible err handling for now
         //let blank = image::Handle::from_pixels(256, 128, [0]);
         let img = reqwest::get(url).await?;
         let img = img.bytes().await?;
 
         let img = imagelib::load_from_memory(&img)?;
-        let img = img.resize_to_fill(256, 128, imagelib::imageops::FilterType::Nearest);
+        let img = img.resize_to_fill(w, h, imagelib::imageops::FilterType::Nearest);
         let img = img.to_rgba8().to_vec();
 
-        Ok(image::Handle::from_pixels(256, 128, img))
+        Ok(image::Handle::from_pixels(w, h, img))
     }
 }
 

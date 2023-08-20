@@ -37,6 +37,7 @@ pub fn done() -> Text<'static> {icon('\u{e876}')}
 
 pub fn pause_clircle_filled() -> Text<'static> {icon('\u{e035}')}
 pub fn play_circle_filled() -> Text<'static> {icon('\u{e038}')}
+pub fn stop() -> Text<'static> {icon('\u{e047}')}
 
 fn icon(unicode: char) -> Text<'static> {
     
