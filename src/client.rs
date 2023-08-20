@@ -309,13 +309,34 @@ async fn handle_kodi_command(message: KodiCommand, client: &mut Client) -> Resul
                 time: KodiTime,
             }
             let objtime = Time { time };
-            let _response: Value = client.request(
-                "Player.Seek",
-                rpc_obj_params!("playerid"=player_id, "value"=objtime)
-            ).await?;
+            let _response: Value = client
+                .request(
+                    "Player.Seek",
+                    rpc_obj_params!("playerid" = player_id, "value" = objtime),
+                )
+                .await?;
 
             // This returns percent/timestamp/duration but we don't really need them
             // because we're scraping every second anyway.
+            Ok(Event::None)
+        }
+
+        KodiCommand::SetSubtitle {
+            player_id,
+            subtitle_index,
+            enabled,
+        } => {
+            let _response: Value = client
+                .request(
+                    "Player.SetSubtitle",
+                    rpc_obj_params!(
+                        "playerid" = player_id,
+                        "subtitle" = subtitle_index,
+                        "enable" = enabled
+                    ),
+                )
+                .await?;
+            dbg!(_response);
             Ok(Event::None)
         }
 

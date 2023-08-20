@@ -4,8 +4,8 @@ use iced::theme::{self, Theme};
 use iced::widget::scrollable::Id;
 // use iced::time;
 use iced::widget::{
-    button, column, container, image, row, scrollable, text, text_input, Button, Rule, Slider,
-    Space,
+    button, column, container, image, pick_list, row, scrollable, text, text_input, Button,
+    Checkbox, Rule, Slider, Space,
 };
 
 use iced::{subscription, window, Application, Color, Command, Element, Event, Length, Settings};
@@ -65,11 +65,15 @@ static BLANK_IMAGE: OnceLock<image::Handle> = OnceLock::new();
 
 struct KodiStatus {
     now_playing: bool,
+    active_player_id: Option<u8>,
     muted: bool,
     paused: bool,
     playing_title: String,
     play_time: KodiTime,
     duration: KodiTime,
+    current_subtitle: Option<Subtitle>,
+    subtitles: Vec<Subtitle>,
+    subtitles_enabled: bool,
 }
 
 #[derive(Debug)]
@@ -97,6 +101,8 @@ enum Message {
     SliderReleased,
     HideModalAndKodiReq(KodiCommand),
     ShowModal(Modals),
+    SubtitlePicked(Subtitle),
+    SubtitleEnable(bool),
 }
 
 enum State {
@@ -113,11 +119,15 @@ impl Application for Krustmote {
     fn new(_flags: ()) -> (Self, Command<Message>) {
         let kodi_status = KodiStatus {
             now_playing: false,
+            active_player_id: None,
             muted: false,
             paused: false,
             playing_title: String::from(""),
             play_time: Default::default(),
             duration: Default::default(),
+            current_subtitle: None,
+            subtitles: Vec::new(),
+            subtitles_enabled: false,
         };
 
         let item_list = ItemList {
@@ -178,6 +188,19 @@ impl Application for Krustmote {
                 self.item_list.start_offset = offset.saturating_sub(1);
             }
 
+            Message::SubtitlePicked(sub) => {
+                let cmd = KodiCommand::SetSubtitle {
+                    player_id: self.kodi_status.active_player_id.unwrap(),
+                    subtitle_index: sub.index,
+                    enabled: self.kodi_status.subtitles_enabled,
+                };
+                return Command::perform(async {}, |_| Message::KodiReq(cmd));
+            }
+
+            Message::SubtitleEnable(val) => {
+                dbg!(val);
+            }
+
             Message::FilterFileList(filter) => {
                 self.item_list.filter = filter;
                 self.item_list.start_offset = 0;
@@ -195,7 +218,12 @@ impl Application for Krustmote {
             Message::SliderReleased => {
                 self.slider_grabbed = false;
                 println!("Slider release: {}", self.kodi_status.play_time);
-                let cmd = KodiCommand::PlayerSeek(1, self.kodi_status.play_time.clone());
+                let cmd = KodiCommand::PlayerSeek(
+                    self.kodi_status
+                        .active_player_id
+                        .expect("should have a player_id if this is visible"),
+                    self.kodi_status.play_time.clone(),
+                );
                 return Command::perform(async {}, |_| Message::KodiReq(cmd));
             }
 
@@ -350,8 +378,10 @@ impl Application for Krustmote {
                 client::Event::UpdatePlayerProps(player_props) => match player_props {
                     None => {
                         self.kodi_status.now_playing = false;
+                        self.kodi_status.active_player_id = None;
                     }
                     Some(props) => {
+                        self.kodi_status.active_player_id = props.player_id;
                         if !self.kodi_status.now_playing {
                             self.kodi_status.now_playing = true;
                             let player_id = props.player_id.expect("player_id should exist");
@@ -361,6 +391,11 @@ impl Application for Krustmote {
                         }
                         self.kodi_status.now_playing = true;
                         self.kodi_status.paused = props.speed == 0.0;
+                        if props.currentsubtitle.is_some() {
+                            self.kodi_status.subtitles = props.subtitles;
+                            self.kodi_status.current_subtitle = props.currentsubtitle;
+                        }
+                        self.kodi_status.subtitles_enabled = props.subtitleenabled;
 
                         if !self.slider_grabbed {
                             self.kodi_status.play_time = props.time;
@@ -501,6 +536,20 @@ impl Application for Krustmote {
                     ],
                     Rule::horizontal(5),
                     row![
+                        pick_list(
+                            &self.kodi_status.subtitles,
+                            self.kodi_status.current_subtitle.clone(),
+                            Message::SubtitlePicked
+                        )
+                        .placeholder("No Subtitles")
+                        .width(Length::Fill),
+                        Checkbox::new(
+                            "",
+                            self.kodi_status.subtitles_enabled,
+                            Message::SubtitleEnable
+                        ),
+                    ],
+                    row![
                         button("-").on_press(Message::KodiReq(KodiCommand::InputExecuteAction(
                             "subtitledelayminus"
                         ))),
@@ -508,10 +557,11 @@ impl Application for Krustmote {
                         button("+").on_press(Message::KodiReq(KodiCommand::InputExecuteAction(
                             "subtitledelayplus"
                         )))
-                    ],
+                    ]
+                    .align_items(iced::Alignment::Center),
                     // Subtitle adjust buttons.
                 ])
-                .width(200)
+                .width(300)
                 .padding(10)
                 .style(theme::Container::Box); // TODO: style this better.
                 Modal::new(content, modal)
@@ -710,7 +760,9 @@ fn remote<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
             button(icons::bug_report()).on_press(Message::KodiReq(KodiCommand::Test)),
             button("playerid-test").on_press(Message::KodiReq(KodiCommand::PlayerGetActivePlayers)),
             button("props-test").on_press(Message::KodiReq(KodiCommand::PlayerGetProperties)),
-            button("item-test").on_press(Message::KodiReq(KodiCommand::PlayerGetPlayingItem(1))),
+            button("item-test").on_press(Message::KodiReq(KodiCommand::PlayerGetPlayingItem(
+                krustmote.kodi_status.active_player_id.unwrap_or(0)
+            ))),
             row![
                 button(icons::volume_down().size(32))
                     .on_press(Message::KodiReq(KodiCommand::InputExecuteAction(

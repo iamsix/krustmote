@@ -118,14 +118,34 @@ pub struct PlayerProps {
 //     width: u16,
 // }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Clone, Debug, Eq, PartialEq)]
 pub struct Subtitle {
-    index: u8,
+    pub index: u8,
     isdefault: bool,
     isforced: bool,
     isimpaired: bool,
     language: String,
     name: String,
+}
+
+impl std::fmt::Display for Subtitle {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let mut extras = String::from("");
+        if self.isdefault {
+            extras = extras + " (default)";
+        }
+        if self.isforced {
+            extras = extras + " (forced)";
+        }
+        if self.isimpaired {
+            extras = extras + " [CC]";
+        }
+        write!(
+            f,
+            "{} - {} - {}{extras}",
+            self.index, self.language, self.name
+        )
+    }
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
@@ -186,6 +206,11 @@ pub enum KodiCommand {
     // ToggleMute,
     GUIActivateWindow(&'static str),
     PlayerSeek(u8, KodiTime),
+    SetSubtitle{
+        player_id: u8,
+        subtitle_index: u8,
+        enabled: bool,
+    },
 
     // Not sure if I actually need these ones from the front end. (they're used by back end)
     PlayerGetProperties, // Possibly some variant of this one to get subs/audio/video
