@@ -1,5 +1,7 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
+use std::sync::{Arc, OnceLock};
+
 
 pub const FILE_PROPS: [&'static str; 20] = [
     "title",
@@ -250,6 +252,22 @@ pub struct Sources {
     pub file: String,
 }
 
+impl Into<crate::ListData> for Sources {
+    fn into(self) -> crate::ListData { 
+        crate::ListData {
+            label: self.label,
+            on_click:  crate::Message::KodiReq(KodiCommand::GetDirectory {
+                path: self.file,
+                media_type: MediaType::Video,
+            }),
+            play_count: None,
+            bottom_right: None,
+            bottom_left: None,
+            image: Arc::new(OnceLock::new()),
+        }
+    }
+}
+
 // TODO: SortType that defines these
 #[derive(Serialize, Debug)]
 pub struct DirSort {
@@ -275,6 +293,51 @@ pub struct DirList {
     pub playcount: Option<u16>,
     #[serde(rename = "type")]
     pub type_: VideoType, // Should be enum from string
+}
+
+// NOTE: this leaves the image blank for now.
+// Could probably fix that by doing Into<Vec<ListData> for Vec<DirList>
+impl Into<crate::ListData> for DirList {
+    fn into(self) -> crate::ListData { 
+        let label = if self.type_ == VideoType::Episode {
+            format!(
+                "{} - S{:02}E{:02} - {}",
+                self.showtitle.unwrap_or("".to_string()),
+                self.season.unwrap_or(0),
+                self.episode.unwrap_or(0),
+                self.title.unwrap_or("".to_string()),
+            )
+        } else {
+            self.label
+        };
+
+        let bottom_left = if self.size > 1_073_741_824 {
+            Some(format!(
+                "{:.2} GB",
+                (self.size as f64 / 1024.0 / 1024.0 / 1024.0)
+            ))
+        } else if self.size > 0 {
+            Some(format!("{:.1} MB", (self.size as f64 / 1024.0 / 1024.0)))
+        } else {
+            None
+        };
+
+        crate::ListData {
+            label,
+            on_click: crate::Message::KodiReq(match self.filetype.as_str() {
+                "directory" => KodiCommand::GetDirectory {
+                    path: self.file,
+                    media_type: MediaType::Video,
+                },
+                "file" => KodiCommand::PlayerOpen(self.file),
+                _ => panic!("Impossible kodi filetype {}", self.filetype),
+            }),
+            play_count: self.playcount,
+            bottom_right: Some(self.lastmodified),
+            bottom_left,
+            image: Arc::new(OnceLock::new()),
+        }
+    }
 }
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Default)]

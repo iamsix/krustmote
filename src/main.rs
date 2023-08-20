@@ -59,6 +59,8 @@ enum Modals {
 const ITEM_HEIGHT: u32 = 55;
 static BLANK_IMAGE: OnceLock<image::Handle> = OnceLock::new();
 
+// TODO: consider directly using PlayerProps and PlayingItem
+//       this basically just re-makes those structs anyway...
 struct KodiStatus {
     now_playing: bool,
     active_player_id: Option<u8>,
@@ -322,99 +324,6 @@ impl Krustmote {
         Ok(image::Handle::from_pixels(w, h, img))
     }
 
-    fn make_itemlist(&mut self, dirlist: Vec<DirList>) -> Option<Command<Message>> {
-        self.item_list.filter = "".to_string();
-        self.item_list.start_offset = 0;
-        let sem = Arc::new(Semaphore::new(10));
-        let mut files: Vec<ListData> = Vec::new();
-        for file in dirlist {
-            // dbg!(&file);
-
-            let (pic_url, w, h) = get_art_url(&file);
-            let pic = get_art(&sem, pic_url, h, w);
-
-            let label = if file.type_ == VideoType::Episode {
-                format!(
-                    "{} - S{:02}E{:02} - {}",
-                    file.showtitle.unwrap_or("".to_string()),
-                    file.season.unwrap_or(0),
-                    file.episode.unwrap_or(0),
-                    file.title.unwrap_or("".to_string()),
-                )
-            } else {
-                file.label
-            };
-
-            let bottom_left = if file.size > 1_073_741_824 {
-                Some(format!(
-                    "{:.2} GB",
-                    (file.size as f64 / 1024.0 / 1024.0 / 1024.0)
-                ))
-            } else if file.size > 0 {
-                Some(format!("{:.1} MB", (file.size as f64 / 1024.0 / 1024.0)))
-            } else {
-                None
-            };
-            files.push(ListData {
-                label,
-                on_click: Message::KodiReq(match file.filetype.as_str() {
-                    "directory" => KodiCommand::GetDirectory {
-                        path: file.file,
-                        media_type: MediaType::Video,
-                    },
-                    "file" => KodiCommand::PlayerOpen(file.file),
-                    _ => panic!("Impossible kodi filetype {}", file.filetype),
-                }),
-                play_count: file.playcount,
-                bottom_right: Some(file.lastmodified),
-                bottom_left,
-                image: pic,
-            })
-
-            // pic.await;
-        }
-        self.item_list.data = files;
-        return Some(scrollable::snap_to(
-            Id::new("files"),
-            scrollable::RelativeOffset { x: 0.0, y: 0.0 },
-        ));
-    }
-
-    fn make_sources(&mut self, sources: Vec<Sources>) -> Option<Command<Message>> {
-        self.item_list.filter = "".to_string();
-        self.item_list.start_offset = 0;
-        let mut files: Vec<ListData> = Vec::new();
-        files.push(ListData {
-            label: String::from("- Database"),
-            on_click: Message::KodiReq(KodiCommand::GetDirectory {
-                path: String::from("videoDB://"),
-                media_type: MediaType::Video,
-            }),
-            play_count: None,
-            bottom_right: None,
-            bottom_left: None,
-            image: Arc::new(OnceLock::new()),
-        });
-        for source in sources {
-            files.push(ListData {
-                label: source.label,
-                on_click: Message::KodiReq(KodiCommand::GetDirectory {
-                    path: source.file,
-                    media_type: MediaType::Video,
-                }),
-                play_count: None,
-                bottom_right: None,
-                bottom_left: None,
-                image: Arc::new(OnceLock::new()),
-            })
-        }
-        self.item_list.data = files;
-        return Some(scrollable::snap_to(
-            Id::new("files"),
-            scrollable::RelativeOffset { x: 0.0, y: 0.0 },
-        ));
-    }
-
     fn handle_server_event(&mut self, event: client::Event) -> Option<Command<Message>> {
         match event {
             client::Event::Connected(connection) => {
@@ -426,15 +335,39 @@ impl Krustmote {
             }
 
             client::Event::UpdateDirList(dirlist) => {
-                if let Some(value) = self.make_itemlist(dirlist) {
-                    return Some(value);
+                let sem = Arc::new(Semaphore::new(10));
+                let mut files: Vec<ListData> = Vec::new();
+                for file in dirlist {
+                    let (pic_url, w, h) = get_art_url(&file);
+                    let pic = get_art(&sem, pic_url, h, w);
+
+                    let mut item: ListData = file.into();
+                    item.image = pic;
+                    files.push(item);
                 }
+                self.item_list.data = files;
+
+                self.item_list.filter = "".to_string();
+                self.item_list.start_offset = 0;
+                return Some(scrollable::snap_to(
+                    Id::new("files"),
+                    scrollable::RelativeOffset { x: 0.0, y: 0.0 },
+                ));
             }
 
             client::Event::UpdateSources(sources) => {
-                if let Some(value) = self.make_sources(sources) {
-                    return Some(value);
+                let mut files: Vec<ListData> = Vec::new();
+                for source in sources {
+                    files.push(source.into())
                 }
+                self.item_list.data = files;
+
+                self.item_list.filter = "".to_string();
+                self.item_list.start_offset = 0;
+                return Some(scrollable::snap_to(
+                    Id::new("files"),
+                    scrollable::RelativeOffset { x: 0.0, y: 0.0 },
+                ));
             }
 
             client::Event::UpdatePlayerProps(player_props) => match player_props {

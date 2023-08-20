@@ -226,9 +226,15 @@ async fn handle_kodi_command(message: KodiCommand, client: &mut Client) -> Resul
                 .request("Files.GetSources", rpc_params![mediatype.as_str()])
                 .await?;
 
-            let sources: Vec<Sources> =
+            let mut sources: Vec<Sources> =
                 <Vec<Sources> as Deserialize>::deserialize(&response["sources"])
                     .expect("Sources should deserialize");
+
+            let db = Sources{
+                label: "- Database".to_string(),
+                file: "videoDB://".to_string(),
+            };
+            sources.insert(0, db);
 
             Ok(Event::UpdateSources(sources))
         }
