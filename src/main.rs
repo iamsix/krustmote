@@ -1,14 +1,11 @@
 use iced::executor;
 use iced::font;
-use iced::theme::{self, Theme};
+use iced::theme::Theme;
 use iced::widget::scrollable::Id;
 // use iced::time;
-use iced::widget::{
-    button, column, container, image, pick_list, row, scrollable, text, text_input, Button,
-    Checkbox, Rule, Slider, Space,
-};
+use iced::widget::{column, container, image, row, scrollable};
 
-use iced::{subscription, window, Application, Color, Command, Element, Event, Length, Settings};
+use iced::{subscription, window, Application, Command, Element, Event, Length, Settings};
 
 use ::image as imagelib;
 use reqwest;
@@ -19,12 +16,11 @@ use std::error::Error;
 use std::sync::{Arc, OnceLock};
 use tokio;
 
-use chrono;
-
 mod client;
 mod icons;
 mod koditypes;
 mod modal;
+mod uiparts;
 
 use modal::Modal;
 
@@ -237,142 +233,15 @@ impl Application for Krustmote {
                 }
 
                 client::Event::UpdateDirList(dirlist) => {
-                    // TODO = push this to a different fn
-                    self.item_list.filter = "".to_string();
-                    self.item_list.start_offset = 0;
-
-                    let sem = Arc::new(Semaphore::new(10));
-
-                    let mut files: Vec<ListData> = Vec::new();
-                    for file in dirlist {
-                        // dbg!(&file);
-                        let label = if file.type_ == VideoType::Episode {
-                            format!(
-                                "{} - S{:02}E{:02} - {}",
-                                file.showtitle.unwrap_or("".to_string()),
-                                file.season.unwrap_or(0),
-                                file.episode.unwrap_or(0),
-                                file.title.unwrap_or("".to_string()),
-                            )
-                        } else {
-                            file.label
-                        };
-
-                        // Temporary to test image loading
-                        let (pic_url, w, h) =
-                            if file.type_ == VideoType::Episode && file.art.thumb.is_some() {
-                                let thumb = file.art.thumb.unwrap();
-                                let thumb = urlencoding::encode(thumb.as_str());
-                                (
-                                    format!("http://192.168.1.22:8080/image/{}", thumb),
-                                    192,
-                                    108,
-                                )
-                            } else if file.art.poster.is_some() {
-                                let poster = file.art.poster.unwrap();
-                                let poster = urlencoding::encode(poster.as_str());
-                                (
-                                    format!("http://192.168.1.22:8080/image/{}", poster),
-                                    80,
-                                    120,
-                                )
-                            } else {
-                                ("".to_string(), 0, 0)
-                            };
-
-                        let lock = Arc::new(OnceLock::new());
-                        let c_lock = Arc::clone(&lock);
-                        // This semaphore limits it to 10 hits on the server at a time.
-                        let permit = Arc::clone(&sem).acquire_owned();
-
-                        let pic = if !pic_url.is_empty() {
-                            tokio::spawn(async move {
-                                let _permit = permit.await;
-                                let res = Krustmote::get_pic(pic_url, h, w).await;
-                                if let Ok(res) = res {
-                                    let _ = c_lock.set(res);
-                                } else {
-                                    dbg!(res.err());
-                                };
-                            });
-                            lock
-                        } else {
-                            Arc::new(OnceLock::new())
-                        };
-
-                        files.push(ListData {
-                            label,
-                            on_click: Message::KodiReq(match file.filetype.as_str() {
-                                "directory" => KodiCommand::GetDirectory {
-                                    path: file.file,
-                                    media_type: MediaType::Video,
-                                },
-                                "file" => KodiCommand::PlayerOpen(file.file),
-                                _ => panic!("Impossible kodi filetype {}", file.filetype),
-                            }),
-                            play_count: file.playcount,
-                            bottom_right: Some(file.lastmodified),
-                            bottom_left: if file.size > 1_073_741_824 {
-                                Some(format!(
-                                    "{:.2} GB",
-                                    (file.size as f64 / 1024.0 / 1024.0 / 1024.0)
-                                ))
-                            } else if file.size > 0 {
-                                Some(format!("{:.1} MB", (file.size as f64 / 1024.0 / 1024.0)))
-                            } else {
-                                None
-                            },
-                            image: pic,
-                        })
-
-                        // pic.await;
+                    if let Some(value) = self.make_itemlist(dirlist) {
+                        return value;
                     }
-                    self.item_list.data = files;
-
-                    //Command::perform(future, f)
-
-                    return scrollable::snap_to(
-                        Id::new("files"),
-                        scrollable::RelativeOffset { x: 0.0, y: 0.0 },
-                    );
                 }
 
                 client::Event::UpdateSources(sources) => {
-                    // TODO: move this to a different fn
-                    self.item_list.filter = "".to_string();
-                    self.item_list.start_offset = 0;
-
-                    let mut files: Vec<ListData> = Vec::new();
-                    files.push(ListData {
-                        label: String::from("- Database"),
-                        on_click: Message::KodiReq(KodiCommand::GetDirectory {
-                            path: String::from("videoDB://"),
-                            media_type: MediaType::Video,
-                        }),
-                        play_count: None,
-                        bottom_right: None,
-                        bottom_left: None,
-                        image: Arc::new(OnceLock::new()),
-                    });
-                    for source in sources {
-                        files.push(ListData {
-                            label: source.label,
-                            on_click: Message::KodiReq(KodiCommand::GetDirectory {
-                                path: source.file,
-                                media_type: MediaType::Video,
-                            }),
-                            play_count: None,
-                            bottom_right: None,
-                            bottom_left: None,
-                            image: Arc::new(OnceLock::new()),
-                        })
+                    if let Some(value) = self.make_sources(sources) {
+                        return value;
                     }
-                    self.item_list.data = files;
-
-                    return scrollable::snap_to(
-                        Id::new("files"),
-                        scrollable::RelativeOffset { x: 0.0, y: 0.0 },
-                    );
                 }
 
                 client::Event::UpdatePlayerProps(player_props) => match player_props {
@@ -461,62 +330,19 @@ impl Application for Krustmote {
     }
 
     fn view(&self) -> Element<Message> {
-        let duration = self.kodi_status.duration.total_seconds();
-        let play_time = self.kodi_status.play_time.total_seconds();
-        let timeleft = duration.saturating_sub(play_time);
-        let now = chrono::offset::Local::now();
-        let end = now + chrono::Duration::seconds(timeleft as i64);
-        let end = end.format("%I:%M %p");
         let content = column![
             // Top Bar thing
-            top_bar(self),
+            uiparts::top_bar(self),
             row![
                 // Left (menu)
-                left_menu(self), //.explain(Color::from_rgb8(0, 255, 0)),
+                uiparts::left_menu(self), //.explain(Color::from_rgb8(0, 255, 0)),
                 //Center (content)
-                center_area(self),
+                uiparts::center_area(self),
                 // Right (remote)
-                remote(self),
+                uiparts::remote(self),
             ]
             .height(Length::Fill),
-            // TODO: properly functioning now playing bar / move this elswhere.
-            if self.kodi_status.now_playing {
-                container(
-                    row![
-                        Space::new(5, 5),
-                        column![
-                            Slider::new(0..=duration, play_time, Message::SliderChanged)
-                                .on_release(Message::SliderReleased),
-                            text(format!(
-                                "{} / {} ({end})",
-                                self.kodi_status.play_time, self.kodi_status.duration
-                            )),
-                            text(self.kodi_status.playing_title.clone()),
-                        ]
-                        .width(Length::FillPortion(60)),
-                        row![
-                            button(if !self.kodi_status.paused {
-                                icons::pause_clircle_filled().size(48)
-                            } else {
-                                icons::play_circle_filled().size(48)
-                            })
-                            .on_press(Message::KodiReq(
-                                KodiCommand::InputExecuteAction("playpause")
-                            )),
-                            button(icons::stop().size(32)).on_press(Message::KodiReq(
-                                KodiCommand::InputExecuteAction("stop")
-                            )),
-                            button("subtitles").on_press(Message::ShowModal(Modals::Subtitles))
-                        ]
-                        .width(Length::FillPortion(40))
-                        .align_items(iced::Alignment::Center)
-                    ]
-                    .spacing(20),
-                )
-                .height(80)
-            } else {
-                container(Space::new(0, 0))
-            }
+            uiparts::playing_bar(self),
         ];
 
         let content: Element<_> = container(content).into();
@@ -524,46 +350,7 @@ impl Application for Krustmote {
         match self.modal {
             Modals::Subtitles => {
                 // TODO: offload this subtitles dialog elswhere.
-                let modal = container(column![
-                    row![
-                        text("Subtitles").height(40),
-                        Space::new(Length::Fill, 10),
-                        // This is likely the only place this Message is used
-                        // however it's the only way I can think to do this
-                        button("Download").on_press(Message::HideModalAndKodiReq(
-                            KodiCommand::GUIActivateWindow("subtitlesearch")
-                        )),
-                    ],
-                    Rule::horizontal(5),
-                    row![
-                        pick_list(
-                            &self.kodi_status.subtitles,
-                            self.kodi_status.current_subtitle.clone(),
-                            Message::SubtitlePicked
-                        )
-                        .placeholder("No Subtitles")
-                        .width(Length::Fill),
-                        Checkbox::new(
-                            "",
-                            self.kodi_status.subtitles_enabled,
-                            Message::SubtitleEnable
-                        ),
-                    ],
-                    row![
-                        button("-").on_press(Message::KodiReq(KodiCommand::InputExecuteAction(
-                            "subtitledelayminus"
-                        ))),
-                        text(" Delay "),
-                        button("+").on_press(Message::KodiReq(KodiCommand::InputExecuteAction(
-                            "subtitledelayplus"
-                        )))
-                    ]
-                    .align_items(iced::Alignment::Center),
-                    // Subtitle adjust buttons.
-                ])
-                .width(300)
-                .padding(10)
-                .style(theme::Container::Box); // TODO: style this better.
+                let modal = uiparts::make_subtitle_modal(self);
                 Modal::new(content, modal)
                     .on_blur(Message::ShowModal(Modals::None))
                     .into()
@@ -599,251 +386,133 @@ impl Krustmote {
 
         Ok(image::Handle::from_pixels(w, h, img))
     }
-}
 
-// TODO : Move these somewhere else / to a different file/struct/etc
-fn top_bar<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
-    container(row![
-        button("=").on_press(Message::ToggleLeftMenu),
-        Space::new(Length::Fill, Length::Shrink),
-        text_input("Filter..", &krustmote.item_list.filter).on_input(Message::FilterFileList),
-        match krustmote.state {
-            State::Disconnected => icons::sync_disabled(),
-            _ => icons::sync(),
-        },
-    ])
-    .into()
-}
+    fn make_itemlist(&mut self, dirlist: Vec<DirList>) -> Option<Command<Message>> {
+        self.item_list.filter = "".to_string();
+        self.item_list.start_offset = 0;
+        let sem = Arc::new(Semaphore::new(10));
+        let mut files: Vec<ListData> = Vec::new();
+        for file in dirlist {
+            // dbg!(&file);
+            let label = if file.type_ == VideoType::Episode {
+                format!(
+                    "{} - S{:02}E{:02} - {}",
+                    file.showtitle.unwrap_or("".to_string()),
+                    file.season.unwrap_or(0),
+                    file.episode.unwrap_or(0),
+                    file.title.unwrap_or("".to_string()),
+                )
+            } else {
+                file.label
+            };
 
-fn center_area<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> {
-    let offset = krustmote.item_list.start_offset;
+            // Temporary to test image loading
+            let (pic_url, w, h) = if file.type_ == VideoType::Episode && file.art.thumb.is_some() {
+                let thumb = file.art.thumb.unwrap();
+                let thumb = urlencoding::encode(thumb.as_str());
+                (
+                    format!("http://192.168.1.22:8080/image/{}", thumb),
+                    192,
+                    108,
+                )
+            } else if file.art.poster.is_some() {
+                let poster = file.art.poster.unwrap();
+                let poster = urlencoding::encode(poster.as_str());
+                (
+                    format!("http://192.168.1.22:8080/image/{}", poster),
+                    80,
+                    120,
+                )
+            } else {
+                ("".to_string(), 0, 0)
+            };
 
-    let count =
-        (offset + krustmote.item_list.visible_count).min(krustmote.item_list.data.len() as u32);
+            let lock = Arc::new(OnceLock::new());
+            let c_lock = Arc::clone(&lock);
+            // This semaphore limits it to 10 hits on the server at a time.
+            let permit = Arc::clone(&sem).acquire_owned();
 
-    let mut virtual_list: Vec<Element<'a, Message>> = Vec::new();
+            let pic = if !pic_url.is_empty() {
+                tokio::spawn(async move {
+                    let _permit = permit.await;
+                    let res = Krustmote::get_pic(pic_url, h, w).await;
+                    if let Ok(res) = res {
+                        let _ = c_lock.set(res);
+                    } else {
+                        dbg!(res.err());
+                    };
+                });
+                lock
+            } else {
+                Arc::new(OnceLock::new())
+            };
 
-    let top_space = offset * ITEM_HEIGHT;
-    virtual_list.push(Space::new(10, top_space as f32).into());
-
-    let mut precount: usize = 0;
-    let files = krustmote
-        .item_list
-        .data
-        .iter()
-        .filter(|&x| {
-            x.label
-                .to_lowercase()
-                .contains(&krustmote.item_list.filter.to_lowercase())
-        })
-        .enumerate()
-        .filter(|&(i, _)| {
-            precount = i;
-            i as u32 >= offset && i as u32 <= count
-        })
-        .map(|(_, data)| make_listitem(data))
-        .map(Element::from)
-        .into_iter();
-
-    virtual_list.extend(files);
-
-    let bottom_space = if !krustmote.item_list.filter.is_empty() {
-        precount as u32 * ITEM_HEIGHT
-    } else if krustmote.item_list.data.len() > 0 {
-        krustmote.item_list.data.len() as u32 * ITEM_HEIGHT
-    } else {
-        0
-    }
-    .saturating_sub(offset * ITEM_HEIGHT)
-    .saturating_sub(krustmote.item_list.visible_count * ITEM_HEIGHT);
-
-    virtual_list.push(Space::new(10, bottom_space as f32).into());
-
-    // dbg!(virtual_list.len());
-
-    let virtual_list = column(virtual_list);
-
-    column![
-        row![if krustmote.item_list.breadcrumb.len() > 1 {
-            button("..")
-                .on_press(Message::UpBreadCrumb)
-                .width(Length::Fill)
-                .height(50)
-        } else {
-            button("").width(Length::Fill).height(50)
-        },]
-        .spacing(1)
-        .padding(5),
-        scrollable(virtual_list.spacing(1).padding(5),)
-            .on_scroll(Message::Scrolled)
-            .id(Id::new("files"))
-    ]
-    .width(Length::Fill)
-    .into()
-}
-
-fn make_listitem(data: &ListData) -> Button<Message> {
-    // Let's stretch the definition of a 'button'
-    // ___________________________________________________________
-    // | picture |  Main Label Information                       |
-    // | picture |  (smaller text) content (genre, runtime, etc) |
-    // | picture |  bottom left                     bottom right |
-    // -----------------------------------------------------------
-    //
-    // row![ picture, column! [ label,
-    //                          content,
-    //                          row! [bottom_left, space, bottom_right],
-    //                         ]
-    //     ]
-    // It seems pretty clear I'll have to make some kind of custom
-    //    RecyclerView type thing.
-    //    The button captures any attempt to touch-scroll.
-    //    and there's no 'fling' anyway
-    //
-    // TODO: I should specify label heights here to ensure no line wrapping/etc
-    let image_data = data.image.get();
-    Button::new(row![
-        if let Some(img) = image_data {
-            container(image(img.clone()).height(45))
-        } else {
-            // let blank = image::Handle::from_pixels(256, 128, [0; 131072]);
-            container(image(BLANK_IMAGE.get().unwrap().clone()).height(45))
-        },
-        // Watched will proabbly go in picture area - for now just this icon or not
-        if data.play_count.unwrap_or(0) > 0 {
-            icons::done()
-        } else {
-            text(" ")
-        },
-        column![
-            text(data.label.as_str()).size(14).height(18),
-            text("").size(10),
-            row![
-                match &data.bottom_left {
-                    Some(d) => text(d.as_str()).size(10),
-                    None => text(""),
-                },
-                Space::new(Length::Fill, Length::Shrink),
-                match &data.bottom_right {
-                    Some(d) => text(d.as_str()).size(10),
-                    None => text(""),
-                },
-            ]
-        ]
-    ])
-    .on_press(data.on_click.clone())
-    .width(Length::Fill)
-    .height(ITEM_HEIGHT as f32)
-}
-
-fn left_menu<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
-    container(
-        column![
-            button(row![icons::folder(), "Files"])
-                .on_press(Message::KodiReq(KodiCommand::GetSources(MediaType::Video)))
-                .width(Length::Fill),
-            button("Settings").width(Length::Fill),
-        ]
-        .spacing(1)
-        .padding(5)
-        .width(100),
-    )
-    .max_width(krustmote.menu_width)
-    .into()
-}
-
-fn remote<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
-    let red = Color::from_rgb8(255, 0, 0);
-    container(
-        column![
-            // seems like I could template these buttons in some way
-            button(icons::bug_report()).on_press(Message::KodiReq(KodiCommand::Test)),
-            button("playerid-test").on_press(Message::KodiReq(KodiCommand::PlayerGetActivePlayers)),
-            button("props-test").on_press(Message::KodiReq(KodiCommand::PlayerGetProperties)),
-            button("item-test").on_press(Message::KodiReq(KodiCommand::PlayerGetPlayingItem(
-                krustmote.kodi_status.active_player_id.unwrap_or(0)
-            ))),
-            row![
-                button(icons::volume_down().size(32))
-                    .on_press(Message::KodiReq(KodiCommand::InputExecuteAction(
-                        "volumedown"
-                    )))
-                    .width(40)
-                    .height(40),
-                if krustmote.kodi_status.muted {
-                    button(icons::volume_off().style(red).size(32))
-                        .height(40)
-                        .width(40)
+            files.push(ListData {
+                label,
+                on_click: Message::KodiReq(match file.filetype.as_str() {
+                    "directory" => KodiCommand::GetDirectory {
+                        path: file.file,
+                        media_type: MediaType::Video,
+                    },
+                    "file" => KodiCommand::PlayerOpen(file.file),
+                    _ => panic!("Impossible kodi filetype {}", file.filetype),
+                }),
+                play_count: file.playcount,
+                bottom_right: Some(file.lastmodified),
+                bottom_left: if file.size > 1_073_741_824 {
+                    Some(format!(
+                        "{:.2} GB",
+                        (file.size as f64 / 1024.0 / 1024.0 / 1024.0)
+                    ))
+                } else if file.size > 0 {
+                    Some(format!("{:.1} MB", (file.size as f64 / 1024.0 / 1024.0)))
                 } else {
-                    button(icons::volume_off().size(32)).height(40).width(40)
+                    None
                 },
-                button(icons::volume_up().size(32))
-                    .on_press(Message::KodiReq(KodiCommand::InputExecuteAction(
-                        "volumeup"
-                    )))
-                    .width(40)
-                    .height(40),
-            ]
-            .spacing(10),
-            Space::new(Length::Shrink, Length::Fill),
-            row![
-                // Might add pgup/pgdn buttons on either side here.
-                Space::new(65, 65),
-                button(icons::expand_less().size(48))
-                    .width(65)
-                    .height(65)
-                    .on_press(Message::KodiReq(KodiCommand::InputButtonEvent {
-                        button: "up",
-                        keymap: "R1",
-                    })),
-            ]
-            .spacing(5),
-            row![
-                button(icons::chevron_left().size(48))
-                    .width(65)
-                    .height(65)
-                    .on_press(Message::KodiReq(KodiCommand::InputButtonEvent {
-                        button: "left",
-                        keymap: "R1",
-                    })),
-                button(icons::circle().size(48))
-                    .width(65)
-                    .height(65)
-                    .on_press(Message::KodiReq(KodiCommand::InputButtonEvent {
-                        button: "select",
-                        keymap: "R1",
-                    })),
-                button(icons::chevron_right().size(48))
-                    .width(65)
-                    .height(65)
-                    .on_press(Message::KodiReq(KodiCommand::InputButtonEvent {
-                        button: "right",
-                        keymap: "R1",
-                    })),
-            ]
-            .spacing(5),
-            row![
-                button(icons::arrow_back().size(32))
-                    .width(65)
-                    .height(65)
-                    .on_press(Message::KodiReq(KodiCommand::InputButtonEvent {
-                        button: "back",
-                        keymap: "R1",
-                    })),
-                button(icons::expand_more().size(48))
-                    .width(65)
-                    .height(65)
-                    .on_press(Message::KodiReq(KodiCommand::InputButtonEvent {
-                        button: "down",
-                        keymap: "R1",
-                    })),
-            ]
-            .spacing(5),
-        ]
-        .padding(10)
-        .spacing(5),
-    )
-    .width(220)
-    .into()
+                image: pic,
+            })
+
+            // pic.await;
+        }
+        self.item_list.data = files;
+        return Some(scrollable::snap_to(
+            Id::new("files"),
+            scrollable::RelativeOffset { x: 0.0, y: 0.0 },
+        ));
+    }
+
+    fn make_sources(&mut self, sources: Vec<Sources>) -> Option<Command<Message>> {
+        self.item_list.filter = "".to_string();
+        self.item_list.start_offset = 0;
+        let mut files: Vec<ListData> = Vec::new();
+        files.push(ListData {
+            label: String::from("- Database"),
+            on_click: Message::KodiReq(KodiCommand::GetDirectory {
+                path: String::from("videoDB://"),
+                media_type: MediaType::Video,
+            }),
+            play_count: None,
+            bottom_right: None,
+            bottom_left: None,
+            image: Arc::new(OnceLock::new()),
+        });
+        for source in sources {
+            files.push(ListData {
+                label: source.label,
+                on_click: Message::KodiReq(KodiCommand::GetDirectory {
+                    path: source.file,
+                    media_type: MediaType::Video,
+                }),
+                play_count: None,
+                bottom_right: None,
+                bottom_left: None,
+                image: Arc::new(OnceLock::new()),
+            })
+        }
+        self.item_list.data = files;
+        return Some(scrollable::snap_to(
+            Id::new("files"),
+            scrollable::RelativeOffset { x: 0.0, y: 0.0 },
+        ));
+    }
 }
-// END TODO
