@@ -2,7 +2,6 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::sync::{Arc, OnceLock};
 
-
 pub const FILE_PROPS: [&'static str; 20] = [
     "title",
     "rating",
@@ -78,8 +77,9 @@ pub const PLAYING_ITEM_PROPS: [&'static str; 28] = [
 ];
 
 fn treat_error_as_none<'de, T, D>(deserializer: D) -> Result<Option<T>, D::Error>
-    where T: Deserialize<'de>,
-          D: Deserializer<'de>
+where
+    T: Deserialize<'de>,
+    D: Deserializer<'de>,
 {
     let value: Value = Deserialize::deserialize(deserializer)?;
     Ok(T::deserialize(value).ok())
@@ -96,7 +96,7 @@ pub struct PlayerProps {
     // audiostreams: Vec[AudioStream],
     pub canseek: bool,
     #[serde(deserialize_with = "treat_error_as_none")]
-    pub currentsubtitle: Option<Subtitle>, // Option? otherwise it's empty
+    pub currentsubtitle: Option<Subtitle>,
     pub subtitles: Vec<Subtitle>,
     // #[serde(deserialize_with = "treat_error_as_none")]
     // pub currentvideostream: VideoStream,
@@ -208,7 +208,7 @@ pub enum KodiCommand {
     // ToggleMute,
     GUIActivateWindow(&'static str),
     PlayerSeek(u8, KodiTime),
-    SetSubtitle{
+    PlayerSetSubtitle {
         player_id: u8,
         subtitle_index: u8,
         enabled: bool,
@@ -253,10 +253,10 @@ pub struct Sources {
 }
 
 impl Into<crate::ListData> for Sources {
-    fn into(self) -> crate::ListData { 
+    fn into(self) -> crate::ListData {
         crate::ListData {
             label: self.label,
-            on_click:  crate::Message::KodiReq(KodiCommand::GetDirectory {
+            on_click: crate::Message::KodiReq(KodiCommand::GetDirectory {
                 path: self.file,
                 media_type: MediaType::Video,
             }),
@@ -288,9 +288,11 @@ pub struct DirList {
     pub title: Option<String>,
     pub lastmodified: String,
     pub size: u64,
+    pub rating: Option<f64>,
     pub season: Option<i16>,
     pub episode: Option<i16>,
     pub playcount: Option<u16>,
+    pub year: Option<u16>,
     #[serde(rename = "type")]
     pub type_: VideoType, // Should be enum from string
 }
@@ -298,7 +300,7 @@ pub struct DirList {
 // NOTE: this leaves the image blank for now.
 // Could probably fix that by doing Into<Vec<ListData> for Vec<DirList>
 impl Into<crate::ListData> for DirList {
-    fn into(self) -> crate::ListData { 
+    fn into(self) -> crate::ListData {
         let label = if self.type_ == VideoType::Episode {
             format!(
                 "{} - S{:02}E{:02} - {}",
@@ -318,8 +320,20 @@ impl Into<crate::ListData> for DirList {
             ))
         } else if self.size > 0 {
             Some(format!("{:.1} MB", (self.size as f64 / 1024.0 / 1024.0)))
+        } else if let Some(rating) = self.rating {
+            if rating > 0.0 {
+                Some(format!("Rating: {:.1}", rating))
+            } else {
+                None
+            }
         } else {
             None
+        };
+
+        let bottom_right = if self.type_ == VideoType::Movie {
+            Some(format!("{}", self.year.unwrap()))
+        } else {
+            Some(self.lastmodified)
         };
 
         crate::ListData {
@@ -333,7 +347,7 @@ impl Into<crate::ListData> for DirList {
                 _ => panic!("Impossible kodi filetype {}", self.filetype),
             }),
             play_count: self.playcount,
-            bottom_right: Some(self.lastmodified),
+            bottom_right,
             bottom_left,
             image: Arc::new(OnceLock::new()),
         }

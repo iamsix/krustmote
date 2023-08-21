@@ -54,111 +54,113 @@ pub fn connect() -> Subscription<Event> {
     subscription::channel(
         std::any::TypeId::of::<Connect>(),
         100,
-        |mut output| async move {
-            let mut state = State::Disconnected;
+        |output| async move { handle_connection(output).await },
+    )
+}
 
-            let mut poller = interval(Duration::from_secs(1));
-            let mut notifications: StreamMap<&str, WsSubscription<Value>> = StreamMap::new();
+async fn handle_connection(mut output: Sender<Event>) -> ! {
+    let mut state = State::Disconnected;
 
-            loop {
-                match &mut state {
-                    State::Disconnected => {
-                        const SERVER: &str = "ws://192.168.1.22:9090";
-                        match WsClientBuilder::default().build(SERVER).await {
-                            Ok(client) => {
-                                let (sender, reciever) = channel(100);
-                                let _ = output.send(Event::Connected(Connection(sender))).await;
+    let mut poller = interval(Duration::from_secs(1));
+    let mut notifications: StreamMap<&str, WsSubscription<Value>> = StreamMap::new();
 
-                                // TODO: More notifications?
-                                let on_play: WsSubscription<Value> = client
-                                    .subscribe_to_method("Player.OnPlay")
-                                    .await
-                                    .expect("OnPlay Subscription should always work");
-                                notifications.insert("OnPlay", on_play);
+    loop {
+        match &mut state {
+            State::Disconnected => {
+                const SERVER: &str = "ws://192.168.1.22:9090";
+                match WsClientBuilder::default().build(SERVER).await {
+                    Ok(client) => {
+                        let (sender, reciever) = channel(100);
+                        let _ = output.send(Event::Connected(Connection(sender))).await;
 
-                                let on_stop: WsSubscription<Value> = client
-                                    .subscribe_to_method("Player.OnStop")
-                                    .await
-                                    .expect("OnStop Subscription should always work");
-                                notifications.insert("OnStop", on_stop);
+                        // TODO: More notifications?
+                        let on_play: WsSubscription<Value> = client
+                            .subscribe_to_method("Player.OnPlay")
+                            .await
+                            .expect("OnPlay Subscription should always work");
+                        notifications.insert("OnPlay", on_play);
 
-                                state = State::Connected(client, reciever);
-                            }
-                            Err(err) => {
-                                dbg!(err);
-                                let _ = output.send(Event::Disconnected).await;
-                                tokio::time::sleep(Duration::from_secs(5)).await;
-                            }
+                        let on_stop: WsSubscription<Value> = client
+                            .subscribe_to_method("Player.OnStop")
+                            .await
+                            .expect("OnStop Subscription should always work");
+                        notifications.insert("OnStop", on_stop);
+
+                        state = State::Connected(client, reciever);
+                    }
+                    Err(err) => {
+                        dbg!(err);
+                        let _ = output.send(Event::Disconnected).await;
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                    }
+                }
+            }
+
+            State::Connected(client, input) => {
+                select! {
+                    recieved = notifications.next() => {
+                        let (function, data) = recieved
+                            .expect("select should always return data");
+
+                        let result = handle_notification(
+                            client,
+                            function,
+                            data
+                        ).await;
+
+                        if result.is_err() {
+                            dbg!(result.err());
+                            state = State::Disconnected;
+                        } else {
+                            let _ = output.send(result.unwrap()).await;
+                        };
+
+                    }
+
+                    _ = poller.tick() => {
+                        // println!("Tick");
+                        let app_status =
+                            poll_kodi_app_status(client).await;
+                        if app_status.is_err() {
+                            dbg!(app_status.err());
+                            state = State::Disconnected;
+                            // if this fails there's no need to poll anything else
+                            continue;
+                        } else {
+                            let _ = output.send(
+                                app_status.unwrap()
+                            ).await;
+                        }
+
+                        let player_props =
+                            poll_player_status(client).await;
+                        if player_props.is_err() {
+                            dbg!(player_props.err());
+                            state = State::Disconnected;
+                        } else {
+                            let _ = output.send(
+                                player_props.unwrap()
+                            ).await;
                         }
                     }
 
-                    State::Connected(client, input) => {
-                        select! {
-                            recieved = notifications.next() => {
-                                let (function, data) = recieved
-                                    .expect("select should always return data");
-
-                                let result = handle_notification(
-                                    client,
-                                    function,
-                                    data
-                                ).await;
-
-                                if result.is_err() {
-                                    dbg!(result.err());
-                                    state = State::Disconnected;
-                                } else {
-                                    let _ = output.send(result.unwrap()).await;
-                                };
-
-                            }
-
-                            _ = poller.tick() => {
-                                // println!("Tick");
-                                let app_status =
-                                    poll_kodi_app_status(client).await;
-                                if app_status.is_err() {
-                                    dbg!(app_status.err());
-                                    state = State::Disconnected;
-                                    // if this fails there's no need to poll anything else
-                                    continue;
-                                } else {
-                                    let _ = output.send(
-                                        app_status.unwrap()
-                                    ).await;
-                                }
-
-                                let player_props =
-                                    poll_player_status(client).await;
-                                if player_props.is_err() {
-                                    dbg!(player_props.err());
-                                    state = State::Disconnected;
-                                } else {
-                                    let _ = output.send(
-                                        player_props.unwrap()
-                                    ).await;
-                                }
-                            }
-
-                            message = input.select_next_some() => {
-                                dbg!(&message);
-                                let result = handle_kodi_command(
-                                    message,
-                                    client
-                                ).await;
-                                if result.is_err() {
-                                    dbg!(result.err());
-                                    state = State::Disconnected;
-                                } else {
-                                    let _ = output.send(result.unwrap()).await;
-                                }
-                            }
+                    message = input.select_next_some() => {
+                        dbg!(&message);
+                        let result = handle_kodi_command(
+                            message,
+                            client
+                        ).await;
+                        if result.is_err() {
+                            dbg!(result.err());
+                            state = State::Disconnected;
+                        } else {
+                            let _ = output.send(result.unwrap()).await;
                         }
                     }
                 }
             }
-        },
-    )
+        }
+    }
 }
 
 async fn poll_kodi_app_status(client: &mut Client) -> Result<Event, Error> {
@@ -230,7 +232,7 @@ async fn handle_kodi_command(message: KodiCommand, client: &mut Client) -> Resul
                 <Vec<Sources> as Deserialize>::deserialize(&response["sources"])
                     .expect("Sources should deserialize");
 
-            let db = Sources{
+            let db = Sources {
                 label: "- Database".to_string(),
                 file: "videoDB://".to_string(),
             };
@@ -327,7 +329,7 @@ async fn handle_kodi_command(message: KodiCommand, client: &mut Client) -> Resul
             Ok(Event::None)
         }
 
-        KodiCommand::SetSubtitle {
+        KodiCommand::PlayerSetSubtitle {
             player_id,
             subtitle_index,
             enabled,

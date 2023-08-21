@@ -21,14 +21,42 @@ mod icons;
 mod koditypes;
 mod modal;
 mod uiparts;
+mod themes;
 
 use modal::Modal;
 
 use koditypes::*;
 
 fn main() -> iced::Result {
+    let img = imagelib::load_from_memory_with_format(
+        include_bytes!("../icon.png"),
+        imagelib::ImageFormat::Png,
+    );
+
+    let window = match img {
+        Ok(img) => {
+            let icon = img.as_rgba8().unwrap();
+            window::Settings {
+                icon: window::icon::from_rgba(
+                    icon.to_vec(),
+                    icon.width(),
+                    icon.height(),
+                )
+                .ok(),
+                ..Default::default()
+            }
+        },
+        Err(_) => {
+            window::Settings { 
+            ..Default::default()
+        }},
+    };
+
     let _ = BLANK_IMAGE.set(image::Handle::from_pixels(80, 120, [0; 38_400]));
-    Krustmote::run(Settings::default())
+    Krustmote::run(Settings {
+        window, 
+        ..Settings::default()
+    })
 }
 
 struct Krustmote {
@@ -187,7 +215,7 @@ impl Application for Krustmote {
             }
 
             Message::SubtitlePicked(sub) => {
-                let cmd = KodiCommand::SetSubtitle {
+                let cmd = KodiCommand::PlayerSetSubtitle {
                     player_id: self.kodi_status.active_player_id.unwrap(),
                     subtitle_index: sub.index,
                     enabled: self.kodi_status.subtitles_enabled,
@@ -311,9 +339,7 @@ impl Krustmote {
         command.unwrap()
     }
 
-    async fn get_pic(url: String, h: u32, w: u32) -> Result<image::Handle, Box<dyn Error>> {
-        // Terrible err handling for now
-        //let blank = image::Handle::from_pixels(256, 128, [0]);
+    async fn get_pic(url: String, w: u32, h: u32) -> Result<image::Handle, Box<dyn Error>> {
         let img = reqwest::get(url).await?;
         let img = img.bytes().await?;
 
@@ -339,7 +365,7 @@ impl Krustmote {
                 let mut files: Vec<ListData> = Vec::new();
                 for file in dirlist {
                     let (pic_url, w, h) = get_art_url(&file);
-                    let pic = get_art(&sem, pic_url, h, w);
+                    let pic = get_art(&sem, pic_url, w, h);
 
                     let mut item: ListData = file.into();
                     item.image = pic;
@@ -423,7 +449,7 @@ impl Krustmote {
     }
 }
 
-fn get_art(sem: &Arc<Semaphore>, pic_url: String, h: u32, w: u32) -> Arc<OnceLock<image::Handle>> {
+fn get_art(sem: &Arc<Semaphore>, pic_url: String, w: u32, h: u32) -> Arc<OnceLock<image::Handle>> {
     let lock = Arc::new(OnceLock::new());
     let c_lock = Arc::clone(&lock);
     // This semaphore limits it to 10 hits on the server at a time.
@@ -432,7 +458,7 @@ fn get_art(sem: &Arc<Semaphore>, pic_url: String, h: u32, w: u32) -> Arc<OnceLoc
     let pic = if !pic_url.is_empty() {
         tokio::spawn(async move {
             let _permit = permit.await;
-            let res = Krustmote::get_pic(pic_url, h, w).await;
+            let res = Krustmote::get_pic(pic_url, w, h).await;
             if let Ok(res) = res {
                 let _ = c_lock.set(res);
             } else {

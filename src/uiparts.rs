@@ -16,6 +16,8 @@ use super::{ListData, Message, Modals, State};
 
 use crate::icons;
 use crate::koditypes::*;
+use crate::themes;
+// use crate::themes;
 
 use chrono;
 
@@ -93,9 +95,10 @@ pub(crate) fn playing_bar<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
                     } else {
                         icons::play_circle_filled().size(48)
                     })
-                    .on_press(Message::KodiReq(
-                        KodiCommand::InputExecuteAction("playpause")
-                    )),
+                    .on_press(Message::KodiReq(KodiCommand::InputExecuteAction(
+                        "playpause"
+                    )))
+                    .style(iced::theme::Button::custom(themes::ColoredButton::Bare)),
                     button(icons::stop().size(32))
                         .on_press(Message::KodiReq(KodiCommand::InputExecuteAction("stop"))),
                     button("subtitles").on_press(Message::ShowModal(Modals::Subtitles))
@@ -245,6 +248,7 @@ pub(crate) fn make_listitem(data: &ListData) -> Button<Message> {
     .on_press(data.on_click.clone())
     .width(Length::Fill)
     .height(ITEM_HEIGHT as f32)
+    .style(theme::Button::custom(themes::ColoredButton::ListItem))
 }
 
 pub(crate) fn left_menu<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
