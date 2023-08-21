@@ -38,6 +38,14 @@ pub fn done() -> Text<'static> {icon('\u{e876}')}
 pub fn pause_clircle_filled() -> Text<'static> {icon('\u{e035}')}
 pub fn play_circle_filled() -> Text<'static> {icon('\u{e038}')}
 pub fn stop() -> Text<'static> {icon('\u{e047}')}
+pub fn fast_rewind() -> Text<'static> {icon('\u{e020}')}
+pub fn fast_forward() -> Text<'static> {icon('\u{e01f}')}
+pub fn skip_previous() -> Text<'static> {icon('\u{e045}')}
+pub fn skip_next() -> Text<'static> {icon('\u{e044}')}
+
+pub fn subtitles() -> Text<'static> {icon('\u{e048}')}
+pub fn smart_display() -> Text<'static> {icon('\u{f06a}')}
+pub fn hearing() -> Text<'static> {icon('\u{e023}')}
 
 fn icon(unicode: char) -> Text<'static> {
     

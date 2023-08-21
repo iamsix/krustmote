@@ -4,6 +4,7 @@ use iced::{Background, Color};
 const DARK: Color = Color::from_rgb(0.2, 0.2, 0.2);
 const DARK_HILIGHT: Color = Color::from_rgb(0.3, 0.3, 0.3);
 
+#[derive(Debug, Clone, Copy)]
 pub enum ColoredButton {
     ListItem,
     Bare,

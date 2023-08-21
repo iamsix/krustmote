@@ -75,6 +75,7 @@ pub(crate) fn playing_bar<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
     let now = chrono::offset::Local::now();
     let end = now + chrono::Duration::seconds(timeleft as i64);
     let end = end.format("%I:%M %p");
+    let bare = themes::ColoredButton::Bare;
     if krustmote.kodi_status.now_playing {
         container(
             row![
@@ -90,6 +91,11 @@ pub(crate) fn playing_bar<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
                 ]
                 .width(Length::FillPortion(60)),
                 row![
+                    Space::new(Length::Fill, 5),
+                    button(icons::skip_previous().size(32).height(48))
+                        .style(theme::Button::custom(bare)),
+                    button(icons::fast_rewind().size(32).height(48))
+                        .style(theme::Button::custom(bare)),
                     button(if !krustmote.kodi_status.paused {
                         icons::pause_clircle_filled().size(48)
                     } else {
@@ -98,10 +104,23 @@ pub(crate) fn playing_bar<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
                     .on_press(Message::KodiReq(KodiCommand::InputExecuteAction(
                         "playpause"
                     )))
-                    .style(iced::theme::Button::custom(themes::ColoredButton::Bare)),
-                    button(icons::stop().size(32))
-                        .on_press(Message::KodiReq(KodiCommand::InputExecuteAction("stop"))),
-                    button("subtitles").on_press(Message::ShowModal(Modals::Subtitles))
+                    .style(theme::Button::custom(bare)),
+                    button(icons::fast_forward().size(32).height(48))
+                        .style(theme::Button::custom(bare)),
+                    button(icons::skip_next().size(32).height(48))
+                        .style(theme::Button::custom(bare)),
+                    button(icons::stop().size(32).height(48))
+                        .on_press(Message::KodiReq(KodiCommand::InputExecuteAction("stop")))
+                        .style(theme::Button::custom(bare)),
+                    Space::new(20, 5),
+                    column![
+                        button(icons::subtitles())
+                            .on_press(Message::ShowModal(Modals::Subtitles))
+                            .style(theme::Button::custom(bare)),
+                        button(icons::smart_display()).style(theme::Button::custom(bare)),
+                        button(icons::hearing()).style(theme::Button::custom(bare)),
+                    ],
+                    Space::new(10, 5),
                 ]
                 .width(Length::FillPortion(40))
                 .align_items(iced::Alignment::Center)
@@ -118,7 +137,9 @@ pub(crate) fn playing_bar<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
 // TODO : Move these somewhere else / to a different file/struct/etc
 pub(crate) fn top_bar<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
     container(row![
-        button("=").on_press(Message::ToggleLeftMenu),
+        button("=")
+            .on_press(Message::ToggleLeftMenu)
+            .style(theme::Button::custom(themes::ColoredButton::Bare)),
         Space::new(Length::Fill, Length::Shrink),
         text_input("Filter..", &krustmote.item_list.filter).on_input(Message::FilterFileList),
         match krustmote.state {
@@ -183,14 +204,28 @@ pub(crate) fn center_area<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> 
                 .on_press(Message::UpBreadCrumb)
                 .width(Length::Fill)
                 .height(50)
+                .style(iced::theme::Button::custom(themes::ColoredButton::ListItem))
         } else {
-            button("").width(Length::Fill).height(50)
+            button("")
+                .width(Length::Fill)
+                .height(50)
+                .style(iced::theme::Button::custom(themes::ColoredButton::ListItem))
         },]
         .spacing(1)
-        .padding(5),
-        scrollable(virtual_list.spacing(1).padding(5),)
-            .on_scroll(Message::Scrolled)
-            .id(Id::new("files"))
+        .padding(iced::Padding {
+            left: 5.0,
+            top: 5.0,
+            right: 0.0,
+            bottom: 5.0
+        }),
+        scrollable(virtual_list.spacing(1).padding(iced::Padding {
+            left: 5.0,
+            top: 5.0,
+            right: 5.0,
+            bottom: 5.0
+        }),)
+        .on_scroll(Message::Scrolled)
+        .id(Id::new("files"))
     ]
     .width(Length::Fill)
     .into()
@@ -252,12 +287,16 @@ pub(crate) fn make_listitem(data: &ListData) -> Button<Message> {
 }
 
 pub(crate) fn left_menu<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
+    let bare = themes::ColoredButton::Bare;
     container(
         column![
             button(row![icons::folder(), "Files"])
                 .on_press(Message::KodiReq(KodiCommand::GetSources(MediaType::Video)))
-                .width(Length::Fill),
-            button("Settings").width(Length::Fill),
+                .width(Length::Fill)
+                .style(theme::Button::custom(bare)),
+            button("Settings")
+                .width(Length::Fill)
+                .style(theme::Button::custom(bare)),
         ]
         .spacing(1)
         .padding(5)
@@ -311,6 +350,7 @@ pub(crate) fn remote<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
                         button: "up",
                         keymap: "R1",
                     })),
+                Space::new(65, 65),
             ]
             .spacing(5),
             row![
@@ -352,12 +392,14 @@ pub(crate) fn remote<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
                         button: "down",
                         keymap: "R1",
                     })),
+                Space::new(65, 65),
             ]
             .spacing(5),
         ]
         .padding(10)
-        .spacing(5),
+        .spacing(5)
+        .align_items(iced::Alignment::Center),
     )
-    .width(220)
+    .width(230)
     .into()
 }
