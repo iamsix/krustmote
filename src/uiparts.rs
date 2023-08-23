@@ -24,7 +24,7 @@ use chrono;
 pub(crate) fn make_subtitle_modal<'a>(
     krustmote: &'a Krustmote,
 ) -> iced::widget::Container<'a, Message> {
-    let modal = container(column![
+    container(column![
         row![
             text("Subtitles").height(40),
             Space::new(Length::Fill, 10),
@@ -63,9 +63,28 @@ pub(crate) fn make_subtitle_modal<'a>(
     ])
     .width(300)
     .padding(10)
-    .style(theme::Container::Box);
-    // TODO: style this better.
-    modal
+    .style(theme::Container::Box)
+}
+
+pub(crate) fn request_text_modal<'a>(
+    krustmote: &'a Krustmote,
+) -> iced::widget::Container<'a, Message> {
+    container(column![
+        text_input("Text to send...", &krustmote.send_text)
+            .on_input(Message::SendTextInput)
+            .on_submit(Message::HideModalAndKodiReq(KodiCommand::InputSendText(
+                krustmote.send_text.clone()
+            ))),
+        row![
+            Space::new(Length::Fill, 5),
+            button("Send").on_press(Message::HideModalAndKodiReq(KodiCommand::InputSendText(
+                krustmote.send_text.clone()
+            ))),
+        ]
+    ])
+    .width(300)
+    .padding(10)
+    .style(theme::Container::Box)
 }
 
 pub(crate) fn playing_bar<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
@@ -83,10 +102,11 @@ pub(crate) fn playing_bar<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
                 column![
                     Slider::new(0..=duration, play_time, Message::SliderChanged)
                         .on_release(Message::SliderReleased),
-                    text(format!(
-                        "{} / {} ({end})",
-                        krustmote.kodi_status.play_time, krustmote.kodi_status.duration
-                    )),
+                    row![
+                        text(format!("{}", krustmote.kodi_status.play_time,)).size(14),
+                        Space::new(Length::Fill, 5),
+                        text(format!("{} ({end})", krustmote.kodi_status.duration)).size(14),
+                    ],
                     text(krustmote.kodi_status.playing_title.clone()),
                 ]
                 .width(Length::FillPortion(60)),
@@ -318,25 +338,52 @@ pub(crate) fn remote<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
                 krustmote.kodi_status.active_player_id.unwrap_or(0)
             ))),
             row![
-                button(icons::volume_down().size(32))
-                    .on_press(Message::KodiReq(KodiCommand::InputExecuteAction(
-                        "volumedown"
-                    )))
-                    .width(40)
-                    .height(40),
+                button(icons::volume_down().size(32)).on_press(Message::KodiReq(
+                    KodiCommand::InputExecuteAction("volumedown")
+                )),
                 if krustmote.kodi_status.muted {
                     button(icons::volume_off().style(red).size(32))
-                        .height(40)
-                        .width(40)
+                        .on_press(Message::KodiReq(KodiCommand::ToggleMute))
                 } else {
-                    button(icons::volume_off().size(32)).height(40).width(40)
+                    button(icons::volume_off().size(32))
+                        .on_press(Message::KodiReq(KodiCommand::ToggleMute))
                 },
-                button(icons::volume_up().size(32))
-                    .on_press(Message::KodiReq(KodiCommand::InputExecuteAction(
-                        "volumeup"
-                    )))
-                    .width(40)
-                    .height(40),
+                button(icons::volume_up().size(32)).on_press(Message::KodiReq(
+                    KodiCommand::InputExecuteAction("volumeup")
+                )),
+            ]
+            .spacing(10),
+            row![
+                button(icons::fullscreen().size(30)).on_press(Message::KodiReq(
+                    KodiCommand::InputButtonEvent {
+                        button: "display",
+                        keymap: "R1"
+                    }
+                )),
+                button(icons::info().size(30)).on_press(Message::KodiReq(
+                    KodiCommand::InputButtonEvent {
+                        button: "info",
+                        keymap: "R1"
+                    }
+                )),
+                button(icons::keyboard().size(30))
+                    .on_press(Message::ShowModal(Modals::RequestText)),
+            ]
+            .spacing(10),
+            row![
+                button(icons::call_to_action().size(30)).on_press(Message::KodiReq(
+                    KodiCommand::InputButtonEvent {
+                        button: "menu",
+                        keymap: "R1"
+                    }
+                )),
+                Space::new(40, 40), // Not sure what to put here.
+                button(icons::format_list_bulleted().size(30)).on_press(Message::KodiReq(
+                    KodiCommand::InputButtonEvent {
+                        button: "title",
+                        keymap: "R1"
+                    }
+                )),
             ]
             .spacing(10),
             Space::new(Length::Shrink, Length::Fill),

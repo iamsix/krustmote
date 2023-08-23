@@ -20,8 +20,8 @@ mod client;
 mod icons;
 mod koditypes;
 mod modal;
-mod uiparts;
 mod themes;
+mod uiparts;
 
 use modal::Modal;
 
@@ -37,24 +37,18 @@ fn main() -> iced::Result {
         Ok(img) => {
             let icon = img.as_rgba8().unwrap();
             window::Settings {
-                icon: window::icon::from_rgba(
-                    icon.to_vec(),
-                    icon.width(),
-                    icon.height(),
-                )
-                .ok(),
+                icon: window::icon::from_rgba(icon.to_vec(), icon.width(), icon.height()).ok(),
                 ..Default::default()
             }
-        },
-        Err(_) => {
-            window::Settings { 
+        }
+        Err(_) => window::Settings {
             ..Default::default()
-        }},
+        },
     };
 
     let _ = BLANK_IMAGE.set(image::Handle::from_pixels(80, 120, [0; 38_400]));
     Krustmote::run(Settings {
-        window, 
+        window,
         ..Settings::default()
     })
 }
@@ -65,6 +59,7 @@ struct Krustmote {
     kodi_status: KodiStatus,
     item_list: ItemList,
     slider_grabbed: bool,
+    send_text: String,
     modal: Modals,
 }
 
@@ -80,6 +75,7 @@ struct ItemList {
 enum Modals {
     None,
     Subtitles,
+    RequestText,
     _Video,
     _Audio,
 }
@@ -129,6 +125,7 @@ enum Message {
     ShowModal(Modals),
     SubtitlePicked(Subtitle),
     SubtitleEnable(bool),
+    SendTextInput(String),
 }
 
 enum State {
@@ -170,6 +167,7 @@ impl Application for Krustmote {
                 kodi_status,
                 item_list,
                 slider_grabbed: false,
+                send_text: String::from(""),
                 modal: Modals::None,
             },
             font::load(include_bytes!("../fonts/MaterialIcons-Regular.ttf").as_slice())
@@ -179,7 +177,7 @@ impl Application for Krustmote {
     }
 
     fn title(&self) -> String {
-        format!("Rustmote - {}", self.kodi_status.playing_title)
+        format!("Krustmote - {}", self.kodi_status.playing_title)
     }
 
     fn update(&mut self, message: Self::Message) -> Command<Self::Message> {
@@ -191,6 +189,11 @@ impl Application for Krustmote {
 
             Message::HideModalAndKodiReq(cmd) => {
                 self.modal = Modals::None;
+
+                if matches!(cmd, KodiCommand::InputSendText(_)) {
+                    self.send_text = "".to_string();
+                }
+
                 return Command::perform(async {}, |_| Message::KodiReq(cmd));
             }
 
@@ -225,6 +228,10 @@ impl Application for Krustmote {
 
             Message::SubtitleEnable(val) => {
                 dbg!(val);
+            }
+
+            Message::SendTextInput(text) => {
+                self.send_text = text;
             }
 
             Message::FilterFileList(filter) => {
@@ -320,6 +327,12 @@ impl Application for Krustmote {
                     .on_blur(Message::ShowModal(Modals::None))
                     .into()
             }
+            Modals::RequestText => {
+                let modal = uiparts::request_text_modal(self);
+                Modal::new(content, modal)
+                    .on_blur(Message::ShowModal(Modals::None))
+                    .into()
+            }
             _ => content,
         }
 
@@ -339,15 +352,15 @@ impl Krustmote {
         command.unwrap()
     }
 
-    async fn get_pic(url: String, w: u32, h: u32) -> Result<image::Handle, Box<dyn Error>> {
-        let img = reqwest::get(url).await?;
+    async fn get_pic(pic: Pic) -> Result<image::Handle, Box<dyn Error>> {
+        let img = reqwest::get(pic.url).await?;
         let img = img.bytes().await?;
 
         let img = imagelib::load_from_memory(&img)?;
-        let img = img.resize_to_fill(w, h, imagelib::imageops::FilterType::Nearest);
+        let img = img.resize_to_fill(pic.w, pic.h, imagelib::imageops::FilterType::Nearest);
         let img = img.to_rgba8().to_vec();
 
-        Ok(image::Handle::from_pixels(w, h, img))
+        Ok(image::Handle::from_pixels(pic.w, pic.h, img))
     }
 
     fn handle_server_event(&mut self, event: client::Event) -> Option<Command<Message>> {
@@ -364,8 +377,8 @@ impl Krustmote {
                 let sem = Arc::new(Semaphore::new(10));
                 let mut files: Vec<ListData> = Vec::new();
                 for file in dirlist {
-                    let (pic_url, w, h) = get_art_url(&file);
-                    let pic = get_art(&sem, pic_url, w, h);
+                    let pic = get_art_url(&file);
+                    let pic = get_art(&sem, pic);
 
                     let mut item: ListData = file.into();
                     item.image = pic;
@@ -412,10 +425,9 @@ impl Krustmote {
                     }
                     self.kodi_status.now_playing = true;
                     self.kodi_status.paused = props.speed == 0.0;
-                    if props.currentsubtitle.is_some() {
-                        self.kodi_status.subtitles = props.subtitles;
-                        self.kodi_status.current_subtitle = props.currentsubtitle;
-                    }
+
+                    self.kodi_status.subtitles = props.subtitles;
+                    self.kodi_status.current_subtitle = props.currentsubtitle;
                     self.kodi_status.subtitles_enabled = props.subtitleenabled;
 
                     if !self.slider_grabbed {
@@ -443,22 +455,32 @@ impl Krustmote {
                 }
             }
 
+            client::Event::InputRequested(input) => {
+                self.send_text = input;
+                self.modal = Modals::RequestText;
+            }
+
             client::Event::None => {}
         }
         None
     }
 }
 
-fn get_art(sem: &Arc<Semaphore>, pic_url: String, w: u32, h: u32) -> Arc<OnceLock<image::Handle>> {
-    let lock = Arc::new(OnceLock::new());
-    let c_lock = Arc::clone(&lock);
-    // This semaphore limits it to 10 hits on the server at a time.
-    let permit = Arc::clone(sem).acquire_owned();
+struct Pic {
+    url: String,
+    h: u32,
+    w: u32,
+}
 
-    let pic = if !pic_url.is_empty() {
+fn get_art(sem: &Arc<Semaphore>, pic: Pic) -> Arc<OnceLock<image::Handle>> {
+    if !pic.url.is_empty() {
+        // This semaphore limits it to 10 hits on the server at a time.
+        let permit = Arc::clone(sem).acquire_owned();
+        let lock = Arc::new(OnceLock::new());
+        let c_lock = Arc::clone(&lock);
         tokio::spawn(async move {
             let _permit = permit.await;
-            let res = Krustmote::get_pic(pic_url, w, h).await;
+            let res = Krustmote::get_pic(pic).await;
             if let Ok(res) = res {
                 let _ = c_lock.set(res);
             } else {
@@ -468,29 +490,31 @@ fn get_art(sem: &Arc<Semaphore>, pic_url: String, w: u32, h: u32) -> Arc<OnceLoc
         lock
     } else {
         Arc::new(OnceLock::new())
-    };
-    pic
+    }
 }
 
-fn get_art_url(file: &DirList) -> (String, u32, u32) {
-    let (pic_url, w, h) = if file.type_ == VideoType::Episode && file.art.thumb.is_some() {
+fn get_art_url(file: &DirList) -> Pic {
+    if file.type_ == VideoType::Episode && file.art.thumb.is_some() {
         let thumb = file.art.thumb.as_ref().unwrap();
         let thumb = urlencoding::encode(thumb.as_str());
-        (
-            format!("http://192.168.1.22:8080/image/{}", thumb),
-            192,
-            108,
-        )
+        Pic {
+            url: format!("http://192.168.1.22:8080/image/{}", thumb),
+            w: 192,
+            h: 108,
+        }
     } else if file.art.poster.is_some() {
         let poster = file.art.poster.as_ref().unwrap();
         let poster = urlencoding::encode(poster.as_str());
-        (
-            format!("http://192.168.1.22:8080/image/{}", poster),
-            80,
-            120,
-        )
+        Pic {
+            url: format!("http://192.168.1.22:8080/image/{}", poster),
+            w: 80,
+            h: 120,
+        }
     } else {
-        ("".to_string(), 0, 0)
-    };
-    (pic_url, w, h)
+        Pic {
+            url: "".to_string(),
+            h: 0,
+            w: 0,
+        }
+    }
 }

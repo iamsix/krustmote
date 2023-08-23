@@ -150,7 +150,7 @@ impl std::fmt::Display for Subtitle {
     }
 }
 
-#[derive(Deserialize, Serialize, Clone, Debug, Default)]
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq)]
 pub struct KodiTime {
     pub hours: u8,
     // this SHOULD be a u16
@@ -191,7 +191,7 @@ pub struct KodiAppStatus {
     //volume: u8,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum KodiCommand {
     Test,
     GetSources(MediaType), // TODO: SortType
@@ -205,7 +205,7 @@ pub enum KodiCommand {
         keymap: &'static str,
     },
     InputExecuteAction(&'static str),
-    // ToggleMute,
+    ToggleMute,
     GUIActivateWindow(&'static str),
     PlayerSeek(u8, KodiTime),
     PlayerSetSubtitle {
@@ -213,6 +213,7 @@ pub enum KodiCommand {
         subtitle_index: u8,
         enabled: bool,
     },
+    InputSendText(String),
 
     // Not sure if I actually need these ones from the front end. (they're used by back end)
     PlayerGetProperties, // Possibly some variant of this one to get subs/audio/video
@@ -220,7 +221,7 @@ pub enum KodiCommand {
     PlayerGetActivePlayers,
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum MediaType {
     Video,

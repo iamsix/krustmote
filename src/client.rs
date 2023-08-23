@@ -74,6 +74,7 @@ async fn handle_connection(mut output: Sender<Event>) -> ! {
                         let _ = output.send(Event::Connected(Connection(sender))).await;
 
                         // TODO: More notifications?
+                        // Input.OnInputRequested
                         let on_play: WsSubscription<Value> = client
                             .subscribe_to_method("Player.OnPlay")
                             .await
@@ -85,6 +86,12 @@ async fn handle_connection(mut output: Sender<Event>) -> ! {
                             .await
                             .expect("OnStop Subscription should always work");
                         notifications.insert("OnStop", on_stop);
+
+                        let on_stop: WsSubscription<Value> = client
+                            .subscribe_to_method("Input.OnInputRequested")
+                            .await
+                            .expect("OnStop Subscription should always work");
+                        notifications.insert("OnInputRequested", on_stop);
 
                         state = State::Connected(client, reciever);
                     }
@@ -99,6 +106,7 @@ async fn handle_connection(mut output: Sender<Event>) -> ! {
             State::Connected(client, input) => {
                 select! {
                     recieved = notifications.next() => {
+                        dbg!(&recieved);
                         let (function, data) = recieved
                             .expect("select should always return data");
 
@@ -348,6 +356,23 @@ async fn handle_kodi_command(message: KodiCommand, client: &mut Client) -> Resul
             Ok(Event::None)
         }
 
+        KodiCommand::ToggleMute => {
+            let _response: Value = client
+                .request("Application.SetMute", rpc_obj_params!("mute" = "toggle"))
+                .await?;
+            // This returns 'false' for muted and 'true' for unmuted but it doesn't matter
+            // since we poll for it anyway.
+            dbg!(_response);
+
+            Ok(Event::None)
+        }
+
+        KodiCommand::InputSendText(text) => {
+            let response: Value = client.request("Input.SendText", rpc_params!(text)).await?;
+            dbg!(response);
+            Ok(Event::None)
+        }
+
         // Debug command
         KodiCommand::PlayerGetActivePlayers => {
             let response: Value = client
@@ -399,6 +424,17 @@ async fn handle_notification(
             let not_playing = Event::UpdatePlayingItem(not_playing);
             Ok(not_playing)
         }
+
+        "OnInputRequested" => {
+            let info = data.expect("select should always return data");
+            dbg!(&info);
+            let test = info["data"]["value"]
+                .as_str()
+                .expect("Notification should contain this value");
+
+            Ok(Event::InputRequested(test.to_string()))
+        }
+
         _ => {
             dbg!(function, data.unwrap());
             Ok(Event::None)
@@ -422,4 +458,5 @@ pub enum Event {
     UpdatePlayerProps(Option<PlayerProps>),
     UpdateKodiAppStatus(KodiAppStatus),
     UpdatePlayingItem(PlayingItem), // Might change to Option
+    InputRequested(String),
 }
