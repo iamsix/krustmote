@@ -28,6 +28,7 @@ use modal::Modal;
 use koditypes::*;
 
 fn main() -> iced::Result {
+    // TODO: Move this somewhere else.
     let img = imagelib::load_from_memory_with_format(
         include_bytes!("../icon.png"),
         imagelib::ImageFormat::Png,
@@ -227,7 +228,8 @@ impl Application for Krustmote {
             }
 
             Message::SubtitleEnable(val) => {
-                dbg!(val);
+                self.kodi_status.subtitles_enabled = val;
+                // send SubtitlePicked here with current_subtitle?
             }
 
             Message::SendTextInput(text) => {
@@ -245,12 +247,12 @@ impl Application for Krustmote {
 
             Message::SliderChanged(new) => {
                 self.slider_grabbed = true;
-                self.kodi_status.play_time.from_seconds(new);
+                self.kodi_status.play_time.set_from_seconds(new);
             }
 
             Message::SliderReleased => {
                 self.slider_grabbed = false;
-                println!("Slider release: {}", self.kodi_status.play_time);
+                // println!("Slider release: {}", self.kodi_status.play_time);
                 let cmd = KodiCommand::PlayerSeek(
                     self.kodi_status
                         .active_player_id
@@ -352,7 +354,7 @@ impl Krustmote {
         command.unwrap()
     }
 
-    async fn get_pic(pic: Pic) -> Result<image::Handle, Box<dyn Error>> {
+    async fn download_pic(pic: Pic) -> Result<image::Handle, Box<dyn Error>> {
         let img = reqwest::get(pic.url).await?;
         let img = img.bytes().await?;
 
@@ -480,7 +482,7 @@ fn get_art(sem: &Arc<Semaphore>, pic: Pic) -> Arc<OnceLock<image::Handle>> {
         let c_lock = Arc::clone(&lock);
         tokio::spawn(async move {
             let _permit = permit.await;
-            let res = Krustmote::get_pic(pic).await;
+            let res = Krustmote::download_pic(pic).await;
             if let Ok(res) = res {
                 let _ = c_lock.set(res);
             } else {

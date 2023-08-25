@@ -74,24 +74,12 @@ async fn handle_connection(mut output: Sender<Event>) -> ! {
                         let _ = output.send(Event::Connected(Connection(sender))).await;
 
                         // TODO: More notifications?
-                        // Input.OnInputRequested
-                        let on_play: WsSubscription<Value> = client
-                            .subscribe_to_method("Player.OnPlay")
-                            .await
-                            .expect("OnPlay Subscription should always work");
-                        notifications.insert("OnPlay", on_play);
-
-                        let on_stop: WsSubscription<Value> = client
-                            .subscribe_to_method("Player.OnStop")
-                            .await
-                            .expect("OnStop Subscription should always work");
-                        notifications.insert("OnStop", on_stop);
-
-                        let on_stop: WsSubscription<Value> = client
-                            .subscribe_to_method("Input.OnInputRequested")
-                            .await
-                            .expect("OnStop Subscription should always work");
-                        notifications.insert("OnInputRequested", on_stop);
+                        ws_subscribe(
+                            vec!["Player.OnPlay", "Player.OnStop", "Input.OnInputRequested"],
+                            &client,
+                            &mut notifications,
+                        )
+                        .await;
 
                         state = State::Connected(client, reciever);
                     }
@@ -105,10 +93,9 @@ async fn handle_connection(mut output: Sender<Event>) -> ! {
 
             State::Connected(client, input) => {
                 select! {
-                    recieved = notifications.next() => {
+                    Some(recieved) = notifications.next() => {
                         dbg!(&recieved);
-                        let (function, data) = recieved
-                            .expect("select should always return data");
+                        let (function, data) = recieved;
 
                         let result = handle_notification(
                             client,
@@ -171,7 +158,21 @@ async fn handle_connection(mut output: Sender<Event>) -> ! {
     }
 }
 
-async fn poll_kodi_app_status(client: &mut Client) -> Result<Event, Error> {
+async fn ws_subscribe(
+    names: Vec<&'static str>,
+    client: &Client,
+    notifications: &mut StreamMap<&str, WsSubscription<Value>>,
+) {
+    for name in names {
+        let sub: WsSubscription<Value> = client
+            .subscribe_to_method(name)
+            .await
+            .expect("Subscription should always work");
+        notifications.insert(name, sub);
+    }
+}
+
+async fn poll_kodi_app_status(client: &Client) -> Result<Event, Error> {
     let response: Value = client
         .request(
             "Application.GetProperties",
@@ -185,7 +186,7 @@ async fn poll_kodi_app_status(client: &mut Client) -> Result<Event, Error> {
     Ok(Event::UpdateKodiAppStatus(app_status))
 }
 
-async fn poll_player_status(client: &mut Client) -> Result<Event, Error> {
+async fn poll_player_status(client: &Client) -> Result<Event, Error> {
     let players: Vec<ActivePlayer> = client
         .request("Player.GetActivePlayers", rpc_params!())
         .await?;
@@ -207,7 +208,7 @@ async fn poll_player_status(client: &mut Client) -> Result<Event, Error> {
     Ok(Event::UpdatePlayerProps(Some(playerprops)))
 }
 
-async fn handle_kodi_command(message: KodiCommand, client: &mut Client) -> Result<Event, Error> {
+async fn handle_kodi_command(message: KodiCommand, client: &Client) -> Result<Event, Error> {
     match message {
         KodiCommand::GetDirectory { path, media_type } => {
             let response: Map<String, Value> = client
@@ -406,33 +407,32 @@ async fn handle_kodi_command(message: KodiCommand, client: &mut Client) -> Resul
 }
 
 async fn handle_notification(
-    client: &mut Client,
+    client: &Client,
     function: &str,
     data: Result<Value, Error>,
 ) -> Result<Event, Error> {
     match function {
-        "OnPlay" => {
-            let info = data.expect("select should always return data");
-
-            let player = <ActivePlayer as Deserialize>::deserialize(&info["data"]["player"])
-                .expect("OnPlay should contain a player item");
+        "Player.OnPlay" => {
+            let info = data?;
+            let player = <ActivePlayer as Deserialize>::deserialize(&info["data"]["player"])?;
 
             handle_kodi_command(KodiCommand::PlayerGetPlayingItem(player.playerid), client).await
         }
-        "OnStop" => {
+
+        "Player.OnStop" => {
             let not_playing = PlayingItem::default();
             let not_playing = Event::UpdatePlayingItem(not_playing);
             Ok(not_playing)
         }
 
-        "OnInputRequested" => {
-            let info = data.expect("select should always return data");
+        "Input.OnInputRequested" => {
+            let info = data?;
             dbg!(&info);
-            let test = info["data"]["value"]
+            let req = info["data"]["value"]
                 .as_str()
-                .expect("Notification should contain this value");
+                .expect("InputReq Notification should contain this value");
 
-            Ok(Event::InputRequested(test.to_string()))
+            Ok(Event::InputRequested(req.to_string()))
         }
 
         _ => {

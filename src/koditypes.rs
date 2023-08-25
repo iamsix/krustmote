@@ -1,6 +1,13 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::sync::{Arc, OnceLock};
+// use tokio::sync::Semaphore;
+
+// static SEM: Semaphore = Semaphore::const_new(10);
+
+// PotentialImage with Arc<Pin<Box<dyn Future>>> and use the OnceLock?
+// Might not work due to lack of async during `view`?
+// I'm not sure how to do the semaphore with that.... static semaphore?
 
 pub const FILE_PROPS: [&'static str; 20] = [
     "title",
@@ -176,7 +183,7 @@ impl KodiTime {
         self.seconds as u32 + self.minutes as u32 * 60 + self.hours as u32 * 60 * 60
     }
 
-    pub fn from_seconds(&mut self, seconds: u32) {
+    pub fn set_from_seconds(&mut self, seconds: u32) {
         self.hours = (seconds / 60 / 60) as u8;
         self.minutes = ((seconds / 60).saturating_sub(self.hours as u32 * 60)) as u8;
         self.seconds = seconds

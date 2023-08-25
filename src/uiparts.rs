@@ -88,13 +88,14 @@ pub(crate) fn request_text_modal<'a>(
 }
 
 pub(crate) fn playing_bar<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
+    let bare = themes::ColoredButton::Bare;
+
     let duration = krustmote.kodi_status.duration.total_seconds();
     let play_time = krustmote.kodi_status.play_time.total_seconds();
     let timeleft = duration.saturating_sub(play_time);
     let now = chrono::offset::Local::now();
     let end = now + chrono::Duration::seconds(timeleft as i64);
     let end = end.format("%I:%M %p");
-    let bare = themes::ColoredButton::Bare;
     if krustmote.kodi_status.now_playing {
         container(
             row![
@@ -154,7 +155,6 @@ pub(crate) fn playing_bar<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
     }
 }
 
-// TODO : Move these somewhere else / to a different file/struct/etc
 pub(crate) fn top_bar<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
     container(row![
         button("=")
@@ -181,7 +181,7 @@ pub(crate) fn center_area<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> 
     let top_space = offset * ITEM_HEIGHT;
     virtual_list.push(Space::new(10, top_space as f32).into());
 
-    let mut precount: usize = 0;
+    let mut precount = 0;
     let files = krustmote
         .item_list
         .data
@@ -197,17 +197,14 @@ pub(crate) fn center_area<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> 
             i as u32 >= offset && i as u32 <= count
         })
         .map(|(_, data)| make_listitem(data))
-        .map(Element::from)
-        .into_iter();
+        .map(Element::from);
 
     virtual_list.extend(files);
 
     let bottom_space = if !krustmote.item_list.filter.is_empty() {
         precount as u32 * ITEM_HEIGHT
-    } else if krustmote.item_list.data.len() > 0 {
-        krustmote.item_list.data.len() as u32 * ITEM_HEIGHT
     } else {
-        0
+        krustmote.item_list.data.len() as u32 * ITEM_HEIGHT
     }
     .saturating_sub(offset * ITEM_HEIGHT)
     .saturating_sub(krustmote.item_list.visible_count * ITEM_HEIGHT);
@@ -275,7 +272,8 @@ pub(crate) fn make_listitem(data: &ListData) -> Button<Message> {
         if let Some(img) = image_data {
             container(image(img.clone()).height(45))
         } else {
-            // let blank = image::Handle::from_pixels(256, 128, [0; 131072]);
+            // Could use a Space here instead
+            //   but BLANK_IMAGE will eventually be PLACEHOLDER_IMAGE
             container(image(BLANK_IMAGE.get().unwrap().clone()).height(45))
         },
         // Watched will proabbly go in picture area - for now just this icon or not
