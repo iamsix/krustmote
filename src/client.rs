@@ -338,6 +338,10 @@ async fn handle_kodi_command(message: KodiCommand, client: &Client) -> Result<Ev
             Ok(Event::None)
         }
 
+        // Kodi RPC kind of ignores the 'enable' field here
+        // It disables it for about 10 seconds and re-enables
+        // instead you have to set subtitle to "on" or "off" instead of an index ID.
+        // So there's a separate PlayerToggleSubtitle for that.
         KodiCommand::PlayerSetSubtitle {
             player_id,
             subtitle_index,
@@ -351,6 +355,18 @@ async fn handle_kodi_command(message: KodiCommand, client: &Client) -> Result<Ev
                         "subtitle" = subtitle_index,
                         "enable" = enabled
                     ),
+                )
+                .await?;
+            dbg!(_response);
+            Ok(Event::None)
+        }
+
+        // Kodi RPC is dumb here - see PlayerSetSubtitle for info
+        KodiCommand::PlayerToggleSubtitle { player_id, on_off } => {
+            let _response: Value = client
+                .request(
+                    "Player.SetSubtitle",
+                    rpc_obj_params!("playerid" = player_id, "subtitle" = on_off),
                 )
                 .await?;
             dbg!(_response);
@@ -394,6 +410,26 @@ async fn handle_kodi_command(message: KodiCommand, client: &Client) -> Result<Ev
             dbg!(&response);
             Ok(Event::None)
         }
+
+        // debug command
+        KodiCommand::PlayerGetPlayingItemDebug(player_id) => {
+            let response: Map<String, Value> = client
+                .request(
+                    "Player.GetItem",
+                    rpc_obj_params! {
+                        "playerid"=player_id,
+                        "properties"=PLAYING_ITEM_PROPS
+                    },
+                )
+                .await?;
+
+            // let playing_item = <PlayingItem as Deserialize>::deserialize(&response["item"])
+            //     .expect("PlayingItem should deserialize");
+            dbg!(response);
+
+            Ok(Event::None)
+        }
+
         // Debug command
         KodiCommand::Test => {
             let response: String = client

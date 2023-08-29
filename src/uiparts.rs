@@ -37,15 +37,15 @@ pub(crate) fn make_subtitle_modal<'a>(
         Rule::horizontal(5),
         row![
             pick_list(
-                &krustmote.kodi_status.subtitles,
-                krustmote.kodi_status.current_subtitle.clone(),
+                &krustmote.kodi_status.player_props.subtitles,
+                krustmote.kodi_status.player_props.currentsubtitle.clone(),
                 Message::SubtitlePicked
             )
             .placeholder("No Subtitles")
             .width(Length::Fill),
             Checkbox::new(
                 "",
-                krustmote.kodi_status.subtitles_enabled,
+                krustmote.kodi_status.player_props.subtitleenabled,
                 Message::SubtitleEnable
             ),
         ],
@@ -61,7 +61,44 @@ pub(crate) fn make_subtitle_modal<'a>(
         .align_items(iced::Alignment::Center),
         // Subtitle adjust buttons.
     ])
-    .width(300)
+    .width(500)
+    .padding(10)
+    .style(theme::Container::Box)
+}
+
+pub(crate) fn make_audio_modal<'a>(
+    krustmote: &'a Krustmote,
+) -> iced::widget::Container<'a, Message> {
+    container(column![
+        row![
+            text("Audio").height(40),
+            Space::new(Length::Fill, 10),
+            button("x").on_press(Message::ShowModal(crate::Modals::None)),
+        ],
+        Rule::horizontal(5),
+        pick_list(
+            &krustmote.kodi_status.player_props.audiostreams,
+            krustmote
+                .kodi_status
+                .player_props
+                .currentaudiostream
+                .clone(),
+            Message::AudioStreamPicked
+        )
+        .placeholder("No Audio")
+        .width(Length::Fill),
+        row![
+            button("-").on_press(Message::KodiReq(KodiCommand::InputExecuteAction(
+                "audiodelayminus"
+            ))),
+            text(" Delay "),
+            button("+").on_press(Message::KodiReq(KodiCommand::InputExecuteAction(
+                "audiodelayplus"
+            )))
+        ]
+        .align_items(iced::Alignment::Center),
+    ])
+    .width(500)
     .padding(10)
     .style(theme::Container::Box)
 }
@@ -82,7 +119,7 @@ pub(crate) fn request_text_modal<'a>(
             ))),
         ]
     ])
-    .width(300)
+    .width(500)
     .padding(10)
     .style(theme::Container::Box)
 }
@@ -90,13 +127,13 @@ pub(crate) fn request_text_modal<'a>(
 pub(crate) fn playing_bar<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
     let bare = themes::ColoredButton::Bare;
 
-    let duration = krustmote.kodi_status.duration.total_seconds();
-    let play_time = krustmote.kodi_status.play_time.total_seconds();
+    let duration = krustmote.kodi_status.player_props.totaltime.total_seconds();
+    let play_time = krustmote.kodi_status.player_props.time.total_seconds();
     let timeleft = duration.saturating_sub(play_time);
     let now = chrono::offset::Local::now();
     let end = now + chrono::Duration::seconds(timeleft as i64);
     let end = end.format("%I:%M %p");
-    if krustmote.kodi_status.now_playing {
+    if krustmote.kodi_status.active_player_id.is_some() {
         container(
             row![
                 Space::new(5, 5),
@@ -104,9 +141,13 @@ pub(crate) fn playing_bar<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
                     Slider::new(0..=duration, play_time, Message::SliderChanged)
                         .on_release(Message::SliderReleased),
                     row![
-                        text(format!("{}", krustmote.kodi_status.play_time,)).size(14),
+                        text(format!("{}", krustmote.kodi_status.player_props.time,)).size(14),
                         Space::new(Length::Fill, 5),
-                        text(format!("{} ({end})", krustmote.kodi_status.duration)).size(14),
+                        text(format!(
+                            "{} ({end})",
+                            krustmote.kodi_status.player_props.totaltime
+                        ))
+                        .size(14),
                     ],
                     text(krustmote.kodi_status.playing_title.clone()),
                 ]
@@ -117,7 +158,7 @@ pub(crate) fn playing_bar<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
                         .style(theme::Button::custom(bare)),
                     button(icons::fast_rewind().size(32).height(48))
                         .style(theme::Button::custom(bare)),
-                    button(if !krustmote.kodi_status.paused {
+                    button(if krustmote.kodi_status.player_props.speed != 0.0 {
                         icons::pause_clircle_filled().size(48)
                     } else {
                         icons::play_circle_filled().size(48)
@@ -138,8 +179,10 @@ pub(crate) fn playing_bar<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
                         button(icons::subtitles())
                             .on_press(Message::ShowModal(Modals::Subtitles))
                             .style(theme::Button::custom(bare)),
+                        button(icons::hearing())
+                            .on_press(Message::ShowModal(Modals::Audio))
+                            .style(theme::Button::custom(bare)),
                         button(icons::smart_display()).style(theme::Button::custom(bare)),
-                        button(icons::hearing()).style(theme::Button::custom(bare)),
                     ],
                     Space::new(10, 5),
                 ]
@@ -332,7 +375,7 @@ pub(crate) fn remote<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
             button(icons::bug_report()).on_press(Message::KodiReq(KodiCommand::Test)),
             button("playerid-test").on_press(Message::KodiReq(KodiCommand::PlayerGetActivePlayers)),
             button("props-test").on_press(Message::KodiReq(KodiCommand::PlayerGetProperties)),
-            button("item-test").on_press(Message::KodiReq(KodiCommand::PlayerGetPlayingItem(
+            button("item-test").on_press(Message::KodiReq(KodiCommand::PlayerGetPlayingItemDebug(
                 krustmote.kodi_status.active_player_id.unwrap_or(0)
             ))),
             row![

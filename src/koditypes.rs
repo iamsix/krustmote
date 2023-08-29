@@ -1,13 +1,6 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::sync::{Arc, OnceLock};
-// use tokio::sync::Semaphore;
-
-// static SEM: Semaphore = Semaphore::const_new(10);
-
-// PotentialImage with Arc<Pin<Box<dyn Future>>> and use the OnceLock?
-// Might not work due to lack of async during `view`?
-// I'm not sure how to do the semaphore with that.... static semaphore?
 
 pub const FILE_PROPS: [&'static str; 20] = [
     "title",
@@ -92,15 +85,15 @@ where
     Ok(T::deserialize(value).ok())
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Clone, Debug, Default)]
 pub struct PlayerProps {
     pub speed: f64,
     pub time: KodiTime,
     pub totaltime: KodiTime,
     pub player_id: Option<u8>,
-    // #[serde(deserialize_with = "treat_error_as_none")]
-    // currentaudiostream: AudioStream,
-    // audiostreams: Vec[AudioStream],
+    #[serde(deserialize_with = "treat_error_as_none")]
+    pub currentaudiostream: Option<AudioStream>,
+    pub audiostreams: Vec<AudioStream>,
     pub canseek: bool,
     #[serde(deserialize_with = "treat_error_as_none")]
     pub currentsubtitle: Option<Subtitle>,
@@ -115,6 +108,40 @@ pub struct PlayerProps {
     pub subtitleenabled: bool,
     // #[serde(rename = "type")]
     // type_: MediaType,
+}
+
+#[derive(Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct AudioStream {
+    bitrate: u64,
+    channels: u8,
+    codec: String,
+    pub index: u8,
+    isdefault: bool,
+    isimpaired: bool,
+    isoriginal: bool,
+    language: String,
+    name: String,
+    samplerate: u64,
+}
+
+impl std::fmt::Display for AudioStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let mut extras = String::from("");
+        if self.isdefault {
+            extras = extras + " (default)";
+        }
+        if self.isoriginal {
+            extras = extras + " (original)";
+        }
+        if self.isimpaired {
+            extras = extras + " (described)";
+        }
+        write!(
+            f,
+            "{} - {} - {} - {} {}ch {extras}",
+            self.index, self.language, self.name, self.codec, self.channels,
+        )
+    }
 }
 
 // #[derive(Deserialize, Clone, Debug, Default)]
@@ -200,7 +227,6 @@ pub struct KodiAppStatus {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum KodiCommand {
-    Test,
     GetSources(MediaType), // TODO: SortType
     GetDirectory {
         path: String,
@@ -220,12 +246,19 @@ pub enum KodiCommand {
         subtitle_index: u8,
         enabled: bool,
     },
+    PlayerToggleSubtitle {
+        player_id: u8,
+        on_off: &'static str,
+    },
     InputSendText(String),
 
-    // Not sure if I actually need these ones from the front end. (they're used by back end)
-    PlayerGetProperties, // Possibly some variant of this one to get subs/audio/video
+    PlayerGetProperties,
     PlayerGetPlayingItem(u8),
     PlayerGetActivePlayers,
+
+    // only used for testing/debug:
+    PlayerGetPlayingItemDebug(u8),
+    Test,
 }
 
 #[derive(Deserialize, Debug, Clone, PartialEq)]
@@ -380,6 +413,7 @@ pub struct Art {
 
 // TODO: LOTS more info
 // Might be ListItem that's returned by playingitem?
+// note a lot of this stuff is likely reutrned blank/default instead of Option
 #[derive(Deserialize, Debug, Clone, Default)]
 pub struct PlayingItem {
     pub label: String,
@@ -389,7 +423,7 @@ pub struct PlayingItem {
     // track: i16,
     // cast: Struct // TODO!
     // director: Struct // TODO!
-    // file: String,
+    pub file: String,
     // firstaired: String, //Could convert this to date myself?
     // playcount: u8,
     // plot: String,

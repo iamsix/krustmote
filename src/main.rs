@@ -78,7 +78,7 @@ enum Modals {
     Subtitles,
     RequestText,
     _Video,
-    _Audio,
+    Audio,
 }
 
 const ITEM_HEIGHT: u32 = 55;
@@ -87,16 +87,11 @@ static BLANK_IMAGE: OnceLock<image::Handle> = OnceLock::new();
 // TODO: consider directly using PlayerProps and PlayingItem
 //       this basically just re-makes those structs anyway...
 struct KodiStatus {
-    now_playing: bool,
     active_player_id: Option<u8>,
     muted: bool,
-    paused: bool,
     playing_title: String,
-    play_time: KodiTime,
-    duration: KodiTime,
-    current_subtitle: Option<Subtitle>,
-    subtitles: Vec<Subtitle>,
-    subtitles_enabled: bool,
+    // playing_item: PlayingItem,
+    player_props: PlayerProps,
 }
 
 #[derive(Debug)]
@@ -126,6 +121,7 @@ enum Message {
     ShowModal(Modals),
     SubtitlePicked(Subtitle),
     SubtitleEnable(bool),
+    AudioStreamPicked(AudioStream),
     SendTextInput(String),
 }
 
@@ -142,16 +138,11 @@ impl Application for Krustmote {
 
     fn new(_flags: ()) -> (Self, Command<Message>) {
         let kodi_status = KodiStatus {
-            now_playing: false,
             active_player_id: None,
             muted: false,
-            paused: false,
-            playing_title: String::from(""),
-            play_time: Default::default(),
-            duration: Default::default(),
-            current_subtitle: None,
-            subtitles: Vec::new(),
-            subtitles_enabled: false,
+            playing_title: "".to_string(),
+            player_props: Default::default(),
+            // playing_item: Default::default(),
         };
 
         let item_list = ItemList {
@@ -220,15 +211,27 @@ impl Application for Krustmote {
 
             Message::SubtitlePicked(sub) => {
                 let cmd = KodiCommand::PlayerSetSubtitle {
-                    player_id: self.kodi_status.active_player_id.unwrap(),
+                    player_id: self
+                        .kodi_status
+                        .active_player_id
+                        .expect("Should be playing if this is called"),
                     subtitle_index: sub.index,
-                    enabled: self.kodi_status.subtitles_enabled,
+                    enabled: self.kodi_status.player_props.subtitleenabled,
                 };
                 return Command::perform(async {}, |_| Message::KodiReq(cmd));
             }
 
             Message::SubtitleEnable(val) => {
-                self.kodi_status.subtitles_enabled = val;
+                self.kodi_status.player_props.subtitleenabled = val;
+                let on_off = if val { "on" } else { "off" };
+                let cmd = KodiCommand::PlayerToggleSubtitle {
+                    player_id: self
+                        .kodi_status
+                        .active_player_id
+                        .expect("Should be playing if this is called"),
+                    on_off,
+                };
+                return Command::perform(async {}, |_| Message::KodiReq(cmd));
                 // send SubtitlePicked here with current_subtitle?
             }
 
@@ -247,7 +250,7 @@ impl Application for Krustmote {
 
             Message::SliderChanged(new) => {
                 self.slider_grabbed = true;
-                self.kodi_status.play_time.set_from_seconds(new);
+                self.kodi_status.player_props.time.set_from_seconds(new);
             }
 
             Message::SliderReleased => {
@@ -257,7 +260,7 @@ impl Application for Krustmote {
                     self.kodi_status
                         .active_player_id
                         .expect("should have a player_id if this is visible"),
-                    self.kodi_status.play_time.clone(),
+                    self.kodi_status.player_props.time.clone(),
                 );
                 return Command::perform(async {}, |_| Message::KodiReq(cmd));
             }
@@ -282,7 +285,8 @@ impl Application for Krustmote {
                     connection.send(command);
                 }
                 State::Disconnected => {
-                    panic!("Kodi is apparently disconnected so I can't");
+                    println!("TODO: Kodi is disconnected UI state")
+                    //panic!("Kodi is apparently disconnected so I can't");
                 }
             },
 
@@ -331,6 +335,13 @@ impl Application for Krustmote {
             }
             Modals::RequestText => {
                 let modal = uiparts::request_text_modal(self);
+                Modal::new(content, modal)
+                    .on_blur(Message::ShowModal(Modals::None))
+                    .into()
+            }
+
+            Modals::Audio => {
+                let modal = uiparts::make_audio_modal(self);
                 Modal::new(content, modal)
                     .on_blur(Message::ShowModal(Modals::None))
                     .into()
@@ -413,29 +424,26 @@ impl Krustmote {
 
             client::Event::UpdatePlayerProps(player_props) => match player_props {
                 None => {
-                    self.kodi_status.now_playing = false;
                     self.kodi_status.active_player_id = None;
                 }
                 Some(props) => {
-                    self.kodi_status.active_player_id = props.player_id;
-                    if !self.kodi_status.now_playing {
-                        self.kodi_status.now_playing = true;
+                    if self.kodi_status.active_player_id.is_none() {
+                        self.kodi_status.active_player_id = props.player_id;
                         let player_id = props.player_id.expect("player_id should exist");
                         return Some(Command::perform(async {}, move |_| {
                             Message::KodiReq(KodiCommand::PlayerGetPlayingItem(player_id))
                         }));
                     }
-                    self.kodi_status.now_playing = true;
-                    self.kodi_status.paused = props.speed == 0.0;
+                    self.kodi_status.active_player_id = props.player_id;
 
-                    self.kodi_status.subtitles = props.subtitles;
-                    self.kodi_status.current_subtitle = props.currentsubtitle;
-                    self.kodi_status.subtitles_enabled = props.subtitleenabled;
-
+                    // Not sure I like this. might add a playbar_position type thing.
                     if !self.slider_grabbed {
-                        self.kodi_status.play_time = props.time;
+                        self.kodi_status.player_props = props;
+                    } else {
+                        let selected_time = self.kodi_status.player_props.time.clone();
+                        self.kodi_status.player_props = props;
+                        self.kodi_status.player_props.time = selected_time;
                     }
-                    self.kodi_status.duration = props.totaltime;
                 }
             },
 
