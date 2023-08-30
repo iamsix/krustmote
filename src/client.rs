@@ -374,6 +374,17 @@ async fn handle_kodi_command(message: KodiCommand, client: &Client) -> Result<Ev
             Ok(Event::None)
         }
 
+        KodiCommand::PlayerSetAudioStream { player_id, audio_index } => {
+            let _response: Value = client
+                .request(
+                    "Player.SetAudioStream",
+                    rpc_obj_params!("playerid" = player_id, "stream" = audio_index),
+                )
+                .await?;
+            dbg!(_response);
+            Ok(Event::None)
+        }
+
         KodiCommand::ToggleMute => {
             let _response: Value = client
                 .request("Application.SetMute", rpc_obj_params!("mute" = "toggle"))

@@ -250,6 +250,10 @@ pub enum KodiCommand {
         player_id: u8,
         on_off: &'static str,
     },
+    PlayerSetAudioStream {
+        player_id: u8,
+        audio_index: u8,
+    },
     InputSendText(String),
 
     PlayerGetProperties,

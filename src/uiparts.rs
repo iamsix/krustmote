@@ -200,7 +200,7 @@ pub(crate) fn playing_bar<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
 
 pub(crate) fn top_bar<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
     container(row![
-        button("=")
+        button(icons::menu())
             .on_press(Message::ToggleLeftMenu)
             .style(theme::Button::custom(themes::ColoredButton::Bare)),
         Space::new(Length::Fill, Length::Shrink),
@@ -379,14 +379,10 @@ pub(crate) fn left_menu<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
                 .on_press(Message::KodiReq(KodiCommand::GetSources(MediaType::Video)))
                 .width(Length::Fill)
                 .style(theme::Button::custom(bare)),
-            row![
-                icons::settings(),
-                button("Settings")
-                    .width(Length::Fill)
-                    .style(theme::Button::custom(bare))
-                    .on_press(Message::ShowSettings),
-            ]
-            .align_items(iced::Alignment::Center),
+            button(row![icons::settings(), "Settings"].align_items(iced::Alignment::Center))
+                .width(Length::Fill)
+                .style(theme::Button::custom(bare))
+                .on_press(Message::ShowSettings),
         ]
         .spacing(1)
         .padding(5)

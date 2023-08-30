@@ -285,6 +285,14 @@ impl Application for Krustmote {
                 // send SubtitlePicked here with current_subtitle?
             }
 
+            Message::AudioStreamPicked(val) => {
+                let cmd = KodiCommand::PlayerSetAudioStream {
+                    player_id: self.kodi_status.active_player_id.expect("Should be playing if this is called"),
+                    audio_index: val.index,
+                };
+                return Command::perform(async {}, |_| Message::KodiReq(cmd));
+            }
+
             Message::SendTextInput(text) => {
                 self.send_text = text;
             }
