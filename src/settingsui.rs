@@ -1,7 +1,9 @@
-use iced::widget::{button, column, text, text_input};
+use iced::widget::{button, column, row, text, text_input, Space};
 use iced::Element;
+use iced::Length;
 use iced::{Color, Command};
 use std::net::IpAddr;
+use std::sync::Arc;
 
 use crate::koditypes::KodiServer;
 
@@ -30,11 +32,13 @@ pub enum Message {
     ServerUnChanged(String),
     ServerPwChanged(String),
     SubmitForm,
+    Cancel,
 }
 
 #[derive(Debug, Clone)]
 pub enum Event {
-    AddServer(KodiServer)
+    AddServer(KodiServer),
+    Cancel,
 }
 
 impl Settings {
@@ -46,6 +50,21 @@ impl Settings {
             edit_server_http_port: "8080".to_string(),
             edit_server_username: "".to_string(),
             edit_server_password: "".to_string(),
+            name_is_valid: true,
+            ip_is_valid: true,
+            ws_port_is_valid: true,
+            http_port_is_valid: true,
+        }
+    }
+
+    pub fn load(server: Arc<KodiServer>) -> Self {
+        Settings {
+            edit_server_name: server.name.clone(),
+            edit_server_ip: server.ip.clone(),
+            edit_server_ws_port: server.websocket_port.to_string(),
+            edit_server_http_port: server.webserver_port.to_string(),
+            edit_server_username: server.username.clone(),
+            edit_server_password: server.password.clone(),
             name_is_valid: true,
             ip_is_valid: true,
             ws_port_is_valid: true,
@@ -95,6 +114,9 @@ impl Settings {
                 );
                 return Command::perform(async {}, |_| Event::AddServer(server));
             }
+            Message::Cancel => {
+                return Command::perform(async {}, |_| Event::Cancel);
+            }
         }
         Command::none()
     }
@@ -131,15 +153,21 @@ impl Settings {
             text_input("", &self.edit_server_username).on_input(Message::ServerUnChanged),
             text("Password"),
             text_input("", &self.edit_server_password).on_input(Message::ServerPwChanged),
-            if self.ip_is_valid
-                && self.ws_port_is_valid
-                && self.http_port_is_valid
-                && self.name_is_valid
-            {
-                button("Save").on_press(Message::SubmitForm)
-            } else {
-                button("Save")
-            }
+            row![
+                Space::new(Length::Fill, 10),
+                button("Cancel").on_press(Message::Cancel),
+                if self.ip_is_valid
+                    && self.ws_port_is_valid
+                    && self.http_port_is_valid
+                    && self.name_is_valid
+                {
+                    button("Save").on_press(Message::SubmitForm)
+                } else {
+                    button("Save")
+                }
+            ]
+            .padding(10)
+            .spacing(10)
         ]
         .into()
     }

@@ -127,6 +127,7 @@ enum Message {
     DbQuery(db::SqlCommand),
     Settings(settingsui::Message),
     SettingsEvent(settingsui::Event),
+    ShowSettings,
     Scrolled(scrollable::Viewport),
     FilterFileList(String),
     FontLoaded(Result<(), font::Error>),
@@ -208,8 +209,20 @@ impl Application for Krustmote {
                 settingsui::Event::AddServer(srv) => {
                     let q = db::SqlCommand::AddOrEditServer(srv);
                     return Command::perform(async {}, |_| Message::DbQuery(q));
-                },
+                }
+                settingsui::Event::Cancel => {
+                    self.content_area = ContentArea::Files;
+                }
             },
+
+            Message::ShowSettings => {
+                let settings = if let Some(server) = &self.kodi_status.server {
+                    settingsui::Settings::load(Arc::clone(server))
+                } else {
+                    settingsui::Settings::new()
+                };
+                self.content_area = ContentArea::Settings(settings);
+            }
 
             Message::ToggleLeftMenu => {
                 // TODO : Fancy animation by subtracting until 0 etc. maybe.
@@ -388,12 +401,13 @@ impl Application for Krustmote {
         if let Some(kodi_server) = &self.kodi_status.server {
             subs.push(client::connect(Arc::clone(kodi_server)).map(Message::ServerStatus));
         };
+
         iced::Subscription::batch(subs)
     }
 
     fn view(&self) -> Element<Message> {
         if let ContentArea::Settings(set) = &self.content_area {
-             // TODO: modify this so that the left_menu is on it stil..
+            // TODO: modify this so that the left_menu is on it stil..
             return set.view().map(Message::Settings);
         };
         let content = column![

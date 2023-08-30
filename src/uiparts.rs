@@ -363,17 +363,30 @@ pub(crate) fn left_menu<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
     let bare = themes::ColoredButton::Bare;
     container(
         column![
-            match krustmote.state {
-                State::Disconnected => icons::sync_disabled(),
-                _ => icons::sync(),
-            },
-            button(row![icons::folder(), "Files"])
+            row![
+                match krustmote.state {
+                    State::Disconnected => icons::sync_disabled(),
+                    _ => icons::sync(),
+                },
+                match &krustmote.kodi_status.server {
+                    Some(s) => text(&s.name).size(14),
+                    None => text("Disconnected").size(14),
+                }
+            ]
+            .align_items(iced::Alignment::Center),
+            Rule::horizontal(20),
+            button(row![icons::folder(), "Files"].align_items(iced::Alignment::Center))
                 .on_press(Message::KodiReq(KodiCommand::GetSources(MediaType::Video)))
                 .width(Length::Fill)
                 .style(theme::Button::custom(bare)),
-            button("Settings")
-                .width(Length::Fill)
-                .style(theme::Button::custom(bare)),
+            row![
+                icons::settings(),
+                button("Settings")
+                    .width(Length::Fill)
+                    .style(theme::Button::custom(bare))
+                    .on_press(Message::ShowSettings),
+            ]
+            .align_items(iced::Alignment::Center),
         ]
         .spacing(1)
         .padding(5)

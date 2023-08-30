@@ -3,12 +3,7 @@ use iced::futures::{SinkExt, StreamExt};
 use iced::subscription::{self, Subscription};
 
 use rusqlite::params;
-// use rusqlite::Result;
 use tokio_rusqlite::Connection;
-//use tokio_rusqlite::Result;
-//use tokio_rusqlite::Error;
-
-// use std::error::Error;
 
 use crate::koditypes::*;
 
@@ -20,7 +15,7 @@ pub enum SqlCommand {
 
 enum State {
     Closed,
-    Open(Connection, Receiver<SqlCommand>), // TODO: sql connection handle.
+    Open(Connection, Receiver<SqlCommand>),
 }
 
 #[derive(Debug, Clone)]
