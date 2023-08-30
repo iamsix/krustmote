@@ -17,9 +17,11 @@ use std::sync::{Arc, OnceLock};
 use tokio;
 
 mod client;
+mod db;
 mod icons;
 mod koditypes;
 mod modal;
+mod settingsui;
 mod themes;
 mod uiparts;
 
@@ -56,11 +58,13 @@ fn main() -> iced::Result {
 
 struct Krustmote {
     state: State,
+    db_state: DbState,
     menu_width: u16,
     kodi_status: KodiStatus,
     item_list: ItemList,
     slider_grabbed: bool,
     send_text: String,
+    content_area: ContentArea,
     modal: Modals,
 }
 
@@ -81,12 +85,20 @@ enum Modals {
     Audio,
 }
 
+enum ContentArea {
+    Files,
+    Loading,
+    Settings(settingsui::Settings),
+    _ItemInfo,
+}
+
 const ITEM_HEIGHT: u32 = 55;
 static BLANK_IMAGE: OnceLock<image::Handle> = OnceLock::new();
 
 // TODO: consider directly using PlayerProps and PlayingItem
 //       this basically just re-makes those structs anyway...
 struct KodiStatus {
+    server: Option<Arc<KodiServer>>,
     active_player_id: Option<u8>,
     muted: bool,
     playing_title: String,
@@ -111,6 +123,10 @@ enum Message {
     UpBreadCrumb,
     ServerStatus(client::Event),
     KodiReq(KodiCommand),
+    DbEvent(db::Event),
+    DbQuery(db::SqlCommand),
+    Settings(settingsui::Message),
+    SettingsEvent(settingsui::Event),
     Scrolled(scrollable::Viewport),
     FilterFileList(String),
     FontLoaded(Result<(), font::Error>),
@@ -120,7 +136,7 @@ enum Message {
     HideModalAndKodiReq(KodiCommand),
     ShowModal(Modals),
     SubtitlePicked(Subtitle),
-    SubtitleEnable(bool),
+    SubtitleToggle(bool),
     AudioStreamPicked(AudioStream),
     SendTextInput(String),
 }
@@ -128,6 +144,11 @@ enum Message {
 enum State {
     Disconnected,
     Connected(client::Connection),
+}
+
+enum DbState {
+    Closed,
+    Open(db::SqlConnection),
 }
 
 impl Application for Krustmote {
@@ -138,6 +159,7 @@ impl Application for Krustmote {
 
     fn new(_flags: ()) -> (Self, Command<Message>) {
         let kodi_status = KodiStatus {
+            server: None,
             active_player_id: None,
             muted: false,
             playing_title: "".to_string(),
@@ -155,11 +177,13 @@ impl Application for Krustmote {
         (
             Self {
                 state: State::Disconnected,
+                db_state: DbState::Closed,
                 menu_width: 150,
                 kodi_status,
                 item_list,
                 slider_grabbed: false,
                 send_text: String::from(""),
+                content_area: ContentArea::Files,
                 modal: Modals::None,
             },
             font::load(include_bytes!("../fonts/MaterialIcons-Regular.ttf").as_slice())
@@ -174,6 +198,19 @@ impl Application for Krustmote {
 
     fn update(&mut self, message: Self::Message) -> Command<Self::Message> {
         match message {
+            Message::Settings(settings_msg) => {
+                if let ContentArea::Settings(set) = &mut self.content_area {
+                    return set.update(settings_msg).map(Message::SettingsEvent);
+                }
+            }
+
+            Message::SettingsEvent(event) => match event {
+                settingsui::Event::AddServer(srv) => {
+                    let q = db::SqlCommand::AddOrEditServer(srv);
+                    return Command::perform(async {}, |_| Message::DbQuery(q));
+                },
+            },
+
             Message::ToggleLeftMenu => {
                 // TODO : Fancy animation by subtracting until 0 etc. maybe.
                 self.menu_width = if self.menu_width == 0 { 150 } else { 0 };
@@ -221,7 +258,7 @@ impl Application for Krustmote {
                 return Command::perform(async {}, |_| Message::KodiReq(cmd));
             }
 
-            Message::SubtitleEnable(val) => {
+            Message::SubtitleToggle(val) => {
                 self.kodi_status.player_props.subtitleenabled = val;
                 let on_off = if val { "on" } else { "off" };
                 let cmd = KodiCommand::PlayerToggleSubtitle {
@@ -265,20 +302,63 @@ impl Application for Krustmote {
                 return Command::perform(async {}, |_| Message::KodiReq(cmd));
             }
 
+            Message::DbEvent(event) => {
+                match event {
+                    db::Event::Closed => {}
+
+                    db::Event::Opened(conn) => {
+                        self.db_state = DbState::Open(conn);
+
+                        // upon open we read config and servers
+                        return Command::perform(async {}, |_| {
+                            Message::DbQuery(db::SqlCommand::GetServers)
+                        });
+                    }
+
+                    db::Event::UpdateServers(servers) => {
+                        dbg!(&servers);
+                        if servers.len() == 0 {
+                            let new_server = settingsui::Settings::new();
+                            self.content_area = ContentArea::Settings(new_server);
+                        } else {
+                            // We currently only care about 1 server until we
+                            // have the settings table to get the selected server
+                            self.kodi_status.server = Some(Arc::new(servers[0].clone()));
+                            self.content_area = ContentArea::Files;
+                        }
+                    }
+
+                    db::Event::None => {}
+                }
+            }
+
+            Message::DbQuery(command) => match &mut self.db_state {
+                DbState::Closed => {
+                    panic!("DB not opened?")
+                }
+
+                DbState::Open(conn) => {
+                    conn.send(command);
+                }
+            },
+
             Message::ServerStatus(event) => {
                 if let Some(value) = self.handle_server_event(event) {
                     return value;
                 }
             }
+
             Message::KodiReq(command) => match &mut self.state {
                 State::Connected(connection) => {
                     match &command {
                         &KodiCommand::GetSources(_) => {
                             self.item_list.breadcrumb.clear();
                             self.item_list.breadcrumb.push(command.clone());
+                            self.content_area = ContentArea::Loading;
                         }
                         &KodiCommand::GetDirectory { .. } => {
                             self.item_list.breadcrumb.push(command.clone());
+                            self.content_area = ContentArea::Loading;
                         }
                         _ => {}
                     }
@@ -296,28 +376,39 @@ impl Application for Krustmote {
     }
 
     fn subscription(&self) -> iced::Subscription<Self::Message> {
-        iced::Subscription::batch(vec![
+        let mut subs = vec![
             subscription::events_with(|event, _| match event {
                 Event::Window(window::Event::Resized { width: _, height }) => {
                     Some(Message::WindowResized(height))
                 }
                 _ => None,
             }),
-            client::connect().map(Message::ServerStatus),
-        ])
+            db::connect().map(Message::DbEvent),
+        ];
+        if let Some(kodi_server) = &self.kodi_status.server {
+            subs.push(client::connect(Arc::clone(kodi_server)).map(Message::ServerStatus));
+        };
+        iced::Subscription::batch(subs)
     }
 
     fn view(&self) -> Element<Message> {
+        if let ContentArea::Settings(set) = &self.content_area {
+             // TODO: modify this so that the left_menu is on it stil..
+            return set.view().map(Message::Settings);
+        };
         let content = column![
-            // Top Bar thing
-            uiparts::top_bar(self),
             row![
-                // Left (menu)
-                uiparts::left_menu(self), //.explain(Color::from_rgb8(0, 255, 0)),
-                //Center (content)
-                uiparts::center_area(self),
-                // Right (remote)
-                uiparts::remote(self),
+                uiparts::left_menu(self),
+                column![
+                    // Top Bar thing
+                    uiparts::top_bar(self),
+                    row![
+                        //Center (content)
+                        uiparts::center_area(self),
+                        // Right (remote)
+                        uiparts::remote(self),
+                    ],
+                ],
             ]
             .height(Length::Fill),
             uiparts::playing_bar(self),
@@ -325,31 +416,20 @@ impl Application for Krustmote {
 
         let content: Element<_> = container(content).into();
 
-        match self.modal {
-            Modals::Subtitles => {
-                // TODO: offload this subtitles dialog elswhere.
-                let modal = uiparts::make_subtitle_modal(self);
-                Modal::new(content, modal)
-                    .on_blur(Message::ShowModal(Modals::None))
-                    .into()
-            }
-            Modals::RequestText => {
-                let modal = uiparts::request_text_modal(self);
-                Modal::new(content, modal)
-                    .on_blur(Message::ShowModal(Modals::None))
-                    .into()
-            }
+        let modal = match self.modal {
+            Modals::Subtitles => Some(uiparts::make_subtitle_modal(self)),
+            Modals::RequestText => Some(uiparts::request_text_modal(self)),
+            Modals::Audio => Some(uiparts::make_audio_modal(self)),
+            _ => None,
+        };
 
-            Modals::Audio => {
-                let modal = uiparts::make_audio_modal(self);
-                Modal::new(content, modal)
-                    .on_blur(Message::ShowModal(Modals::None))
-                    .into()
-            }
-            _ => content,
+        if let Some(modal) = modal {
+            Modal::new(content, modal)
+                .on_blur(Message::ShowModal(Modals::None))
+                .into()
+        } else {
+            content
         }
-
-        //  x //.explain(Color::from_rgb8(255, 0, 0))
     }
 
     fn theme(&self) -> Self::Theme {
@@ -389,8 +469,13 @@ impl Krustmote {
             client::Event::UpdateDirList(dirlist) => {
                 let sem = Arc::new(Semaphore::new(10));
                 let mut files: Vec<ListData> = Vec::new();
+                let http_url = if let Some(server) = &self.kodi_status.server {
+                    server.http_url()
+                } else {
+                    panic!("Shouldn't be called if there's no server")
+                };
                 for file in dirlist {
-                    let pic = get_art_url(&file);
+                    let pic = get_art_url(&file, &http_url);
                     let pic = get_art(&sem, pic);
 
                     let mut item: ListData = file.into();
@@ -401,6 +486,7 @@ impl Krustmote {
 
                 self.item_list.filter = "".to_string();
                 self.item_list.start_offset = 0;
+                self.content_area = ContentArea::Files;
                 return Some(scrollable::snap_to(
                     Id::new("files"),
                     scrollable::RelativeOffset { x: 0.0, y: 0.0 },
@@ -416,6 +502,7 @@ impl Krustmote {
 
                 self.item_list.filter = "".to_string();
                 self.item_list.start_offset = 0;
+                self.content_area = ContentArea::Files;
                 return Some(scrollable::snap_to(
                     Id::new("files"),
                     scrollable::RelativeOffset { x: 0.0, y: 0.0 },
@@ -503,12 +590,12 @@ fn get_art(sem: &Arc<Semaphore>, pic: Pic) -> Arc<OnceLock<image::Handle>> {
     }
 }
 
-fn get_art_url(file: &DirList) -> Pic {
+fn get_art_url(file: &DirList, http_url: &String) -> Pic {
     if file.type_ == VideoType::Episode && file.art.thumb.is_some() {
         let thumb = file.art.thumb.as_ref().unwrap();
         let thumb = urlencoding::encode(thumb.as_str());
         Pic {
-            url: format!("http://192.168.1.22:8080/image/{}", thumb),
+            url: format!("{}/image/{}", http_url, thumb),
             w: 192,
             h: 108,
         }
@@ -516,7 +603,7 @@ fn get_art_url(file: &DirList) -> Pic {
         let poster = file.art.poster.as_ref().unwrap();
         let poster = urlencoding::encode(poster.as_str());
         Pic {
-            url: format!("http://192.168.1.22:8080/image/{}", poster),
+            url: format!("{}/image/{}", http_url, poster),
             w: 80,
             h: 120,
         }

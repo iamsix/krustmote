@@ -2,3 +2,5 @@
 .vscode/
 # scratch file used for testing things
 test.rs
+# local db
+*.db

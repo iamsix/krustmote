@@ -446,3 +446,44 @@ pub struct PlayingItem {
     pub type_: VideoType,
     // there's also ignored field 'userrating' but I think it's useless.
 }
+
+#[derive(Debug, Clone)]
+pub struct KodiServer {
+    pub id: u8,
+    pub name: String,
+    pub ip: String,
+    pub websocket_port: u16,
+    pub webserver_port: u16,
+    pub username: String,
+    pub password: String,
+    pub db_id: u8,
+}
+
+impl KodiServer {
+    pub fn new(
+        name: String,
+        ip: String,
+        websocket_port: u16,
+        webserver_port: u16,
+        username: String,
+        password: String,
+    ) -> Self {
+        KodiServer {
+            id: 0,
+            name,
+            ip,
+            websocket_port,
+            webserver_port,
+            username,
+            password,
+            db_id: 0,
+        }
+    }
+
+    pub fn websocket_url(&self) -> String {
+        format!("ws://{}:{}", self.ip, self.websocket_port)
+    }
+    pub fn http_url(&self) -> String {
+        format!("http://{}:{}", self.ip, self.webserver_port)
+    }
+}

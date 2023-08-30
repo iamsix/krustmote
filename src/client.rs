@@ -17,6 +17,8 @@ use tokio::select;
 use tokio::time::{interval, Duration};
 use tokio_stream::StreamMap;
 
+use std::sync::Arc;
+
 use crate::koditypes::*;
 
 // TODO: muncher to allow nesting?
@@ -44,21 +46,21 @@ impl Connection {
     pub fn send(&mut self, message: KodiCommand) {
         self.0
             .try_send(message)
-            .expect("Send command to Kodi server");
+            .expect("Should be able to send to kodi client");
     }
 }
 
-pub fn connect() -> Subscription<Event> {
+pub fn connect(server: Arc<KodiServer>) -> Subscription<Event> {
     struct Connect;
 
     subscription::channel(
         std::any::TypeId::of::<Connect>(),
         100,
-        |output| async move { handle_connection(output).await },
+        |output| async move { handle_connection(output, server).await },
     )
 }
 
-async fn handle_connection(mut output: Sender<Event>) -> ! {
+async fn handle_connection(mut output: Sender<Event>, server: Arc<KodiServer>) -> ! {
     let mut state = State::Disconnected;
 
     let mut poller = interval(Duration::from_secs(1));
@@ -67,8 +69,7 @@ async fn handle_connection(mut output: Sender<Event>) -> ! {
     loop {
         match &mut state {
             State::Disconnected => {
-                const SERVER: &str = "ws://192.168.1.22:9090";
-                match WsClientBuilder::default().build(SERVER).await {
+                match WsClientBuilder::default().build(server.websocket_url()).await {
                     Ok(client) => {
                         let (sender, reciever) = channel(100);
                         let _ = output.send(Event::Connected(Connection(sender))).await;

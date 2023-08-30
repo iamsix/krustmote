@@ -46,7 +46,7 @@ pub(crate) fn make_subtitle_modal<'a>(
             Checkbox::new(
                 "",
                 krustmote.kodi_status.player_props.subtitleenabled,
-                Message::SubtitleEnable
+                Message::SubtitleToggle
             ),
         ],
         row![
@@ -205,15 +205,27 @@ pub(crate) fn top_bar<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
             .style(theme::Button::custom(themes::ColoredButton::Bare)),
         Space::new(Length::Fill, Length::Shrink),
         text_input("Filter..", &krustmote.item_list.filter).on_input(Message::FilterFileList),
-        match krustmote.state {
-            State::Disconnected => icons::sync_disabled(),
-            _ => icons::sync(),
-        },
     ])
     .into()
 }
 
 pub(crate) fn center_area<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> {
+    match krustmote.content_area {
+        crate::ContentArea::Files => file_list(krustmote),
+        crate::ContentArea::Loading => loading(krustmote),
+        _ => container("").into(),
+    }
+}
+
+pub(crate) fn loading<'a>(_krustmote: &'a Krustmote) -> Element<'a, Message> {
+    // TODO: Spinner.
+    container(text("...").size(48))
+        .width(Length::Fill)
+        .align_x(iced::alignment::Horizontal::Center)
+        .into()
+}
+
+pub(crate) fn file_list<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> {
     let offset = krustmote.item_list.start_offset;
 
     let count =
@@ -351,6 +363,10 @@ pub(crate) fn left_menu<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
     let bare = themes::ColoredButton::Bare;
     container(
         column![
+            match krustmote.state {
+                State::Disconnected => icons::sync_disabled(),
+                _ => icons::sync(),
+            },
             button(row![icons::folder(), "Files"])
                 .on_press(Message::KodiReq(KodiCommand::GetSources(MediaType::Video)))
                 .width(Length::Fill)
