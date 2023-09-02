@@ -2,7 +2,7 @@ use jsonrpsee::core::client::{
     Client, ClientT, Subscription as WsSubscription, SubscriptionClientT,
 };
 use jsonrpsee::core::params::ObjectParams;
-use jsonrpsee::core::Error;
+// use jsonrpsee::core::Error;
 use jsonrpsee::rpc_params;
 use jsonrpsee::ws_client::WsClientBuilder;
 
@@ -17,6 +17,7 @@ use tokio::select;
 use tokio::time::{interval, Duration};
 use tokio_stream::StreamMap;
 
+use std::error::Error;
 use std::sync::Arc;
 
 use crate::koditypes::*;
@@ -176,7 +177,7 @@ async fn ws_subscribe(
     }
 }
 
-async fn poll_kodi_app_status(client: &Client) -> Result<Event, Error> {
+async fn poll_kodi_app_status(client: &Client) -> Result<Event, Box<dyn Error + Send + Sync>> {
     let response: Value = client
         .request(
             "Application.GetProperties",
@@ -190,7 +191,7 @@ async fn poll_kodi_app_status(client: &Client) -> Result<Event, Error> {
     Ok(Event::UpdateKodiAppStatus(app_status))
 }
 
-async fn poll_player_status(client: &Client) -> Result<Event, Error> {
+async fn poll_player_status(client: &Client) -> Result<Event, Box<dyn Error + Send + Sync>> {
     let players: Vec<ActivePlayer> = client
         .request("Player.GetActivePlayers", rpc_params!())
         .await?;
@@ -212,7 +213,10 @@ async fn poll_player_status(client: &Client) -> Result<Event, Error> {
     Ok(Event::UpdatePlayerProps(Some(playerprops)))
 }
 
-async fn handle_kodi_command(message: KodiCommand, client: &Client) -> Result<Event, Error> {
+async fn handle_kodi_command(
+    message: KodiCommand,
+    client: &Client,
+) -> Result<Event, Box<dyn Error + Send + Sync>> {
     match message {
         KodiCommand::GetDirectory { path, media_type } => {
             let response: Map<String, Value> = client
@@ -480,8 +484,8 @@ async fn handle_kodi_command(message: KodiCommand, client: &Client) -> Result<Ev
 async fn handle_notification(
     client: &Client,
     function: &str,
-    data: Result<Value, Error>,
-) -> Result<Event, Error> {
+    data: Result<Value, jsonrpsee::core::Error>,
+) -> Result<Event, Box<dyn Error + Sync + Send>> {
     match function {
         "Player.OnPlay" => {
             let info = data?;

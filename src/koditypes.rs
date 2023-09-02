@@ -515,6 +515,24 @@ pub struct MovieListItem {
     pub playcount: u16,
 }
 
+impl Into<crate::ListData> for MovieListItem {
+    // TODO: Once the DB has image data I have to build an actual imageHandle here
+    // Likely store the art URL (poster) in db. Use a hash to check for image cache hit
+    // if no hit DL image then save as ./imagecache/<hash>.[jpg/png]
+    fn into(self) -> crate::ListData {
+        let on_click = crate::Message::KodiReq(KodiCommand::PlayerOpen(self.file));
+        let bottom_left = Some(format!("Rating: {:.1}", self.rating));
+        crate::ListData {
+            label: self.title,
+            on_click,
+            play_count: Some(self.playcount),
+            bottom_left,
+            bottom_right: Some(self.year.to_string()),
+            image: Arc::new(OnceLock::new()),
+        }
+    }
+}
+
 #[derive(Deserialize, Debug, Clone)]
 pub struct MovieProps {
     pub movieid: u32,

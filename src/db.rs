@@ -12,6 +12,7 @@ pub enum SqlCommand {
     GetServers,
     AddOrEditServer(KodiServer),
     InsertMovies(Vec<MovieListItem>),
+    GetMovieList,
 }
 
 enum State {
@@ -130,7 +131,48 @@ async fn handle_command(cmd: SqlCommand, conn: &mut Connection) -> Result<Event,
             dbg!(res.err());
             Ok(Event::None)
         }
+
+        SqlCommand::GetMovieList => {
+            let res = get_movie_list(conn).await;
+            if let Ok(res) = res {
+                //dbg!(res);
+                Ok(Event::UpdateMovieList(res))
+            } else {
+                dbg!(res.err());
+                Ok(Event::None)
+            }
+        }
     }
+}
+
+async fn get_movie_list(conn: &Connection) -> Result<Vec<MovieListItem>, tokio_rusqlite::Error> {
+    Ok(conn
+        .call(|conn| {
+            let q = "SELECT * FROM movielist";
+            let mut stmt = conn.prepare(q)?;
+            let movies = stmt
+                .query_map([], |row| {
+                    let genres: Vec<String> = row
+                        .get::<usize, String>(2)?
+                        .split(",")
+                        .map(|s| s.to_string())
+                        .collect();
+                    Ok(MovieListItem {
+                        movieid: row.get(0)?,
+                        title: row.get(1)?,
+                        genre: genres,
+                        year: row.get(3)?,
+                        rating: row.get(4)?,
+                        playcount: row.get(5)?,
+                        file: row.get(6)?,
+                        dateadded: row.get(7)?,
+                        premiered: row.get(8)?,
+                    })
+                })?
+                .collect::<Result<Vec<MovieListItem>, rusqlite::Error>>();
+            Ok::<_, rusqlite::Error>(movies)
+        })
+        .await??)
 }
 
 async fn get_server_list(conn: &Connection) -> Result<Vec<KodiServer>, tokio_rusqlite::Error> {
@@ -164,7 +206,6 @@ async fn insert_movies(
     let movies = conn.call(|conn| {
 
         let t = conn.transaction()?;
-        //let question_marks = format!("{}?", 1..4.join() )
         for movie in movies {
             t.execute("INSERT INTO movielist VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9
@@ -259,4 +300,5 @@ pub enum Event {
     Closed,
     None,
     UpdateServers(Vec<KodiServer>),
+    UpdateMovieList(Vec<MovieListItem>),
 }
