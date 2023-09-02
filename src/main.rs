@@ -121,7 +121,7 @@ pub struct ListData {
 enum Message {
     ToggleLeftMenu,
     UpBreadCrumb,
-    ServerStatus(client::Event),
+    ServerEvent(client::Event),
     KodiReq(KodiCommand),
     DbEvent(db::Event),
     DbQuery(db::SqlCommand),
@@ -287,7 +287,10 @@ impl Application for Krustmote {
 
             Message::AudioStreamPicked(val) => {
                 let cmd = KodiCommand::PlayerSetAudioStream {
-                    player_id: self.kodi_status.active_player_id.expect("Should be playing if this is called"),
+                    player_id: self
+                        .kodi_status
+                        .active_player_id
+                        .expect("Should be playing if this is called"),
                     audio_index: val.index,
                 };
                 return Command::perform(async {}, |_| Message::KodiReq(cmd));
@@ -363,7 +366,7 @@ impl Application for Krustmote {
                 }
             },
 
-            Message::ServerStatus(event) => {
+            Message::ServerEvent(event) => {
                 if let Some(value) = self.handle_server_event(event) {
                     return value;
                 }
@@ -407,7 +410,7 @@ impl Application for Krustmote {
             db::connect().map(Message::DbEvent),
         ];
         if let Some(kodi_server) = &self.kodi_status.server {
-            subs.push(client::connect(Arc::clone(kodi_server)).map(Message::ServerStatus));
+            subs.push(client::connect(Arc::clone(kodi_server)).map(Message::ServerEvent));
         };
 
         iced::Subscription::batch(subs)
@@ -464,7 +467,7 @@ impl Krustmote {
         // dbg!(&self.breadcrumb);
         let _ = self.item_list.breadcrumb.pop();
         let command = self.item_list.breadcrumb.pop();
-        command.unwrap()
+        command.expect("List should have an entry if this is callable")
     }
 
     async fn download_pic(pic: Pic) -> Result<image::Handle, Box<dyn Error>> {
@@ -577,6 +580,11 @@ impl Krustmote {
             client::Event::InputRequested(input) => {
                 self.send_text = input;
                 self.modal = Modals::RequestText;
+            }
+
+            client::Event::UpdateMovieList(movies) => {
+                let cmd = Message::DbQuery(db::SqlCommand::InsertMovies(movies));
+                return Some(Command::perform(async {}, |_| cmd));
             }
 
             client::Event::None => {}

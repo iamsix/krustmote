@@ -1,4 +1,6 @@
 #![allow(dead_code)]
+// I prefer these icons in one-line as it's easier to read
+#![cfg_attr(rustfmt, rustfmt_skip)]
 use iced::Font;
 use iced::widget::{text, Text};
 use iced::alignment;
@@ -50,11 +52,9 @@ pub fn smart_display() -> Text<'static> {icon('\u{f06a}')}
 pub fn hearing() -> Text<'static> {icon('\u{e023}')}
 
 fn icon(unicode: char) -> Text<'static> {
-    
-    
     text(unicode.to_string())
         .font(ICONS)
         .horizontal_alignment(alignment::Horizontal::Center)
         .vertical_alignment(alignment::Vertical::Center)
         .line_height(1.0)
-  }
+}

@@ -11,6 +11,7 @@ use crate::koditypes::*;
 pub enum SqlCommand {
     GetServers,
     AddOrEditServer(KodiServer),
+    InsertMovies(Vec<MovieListItem>),
 }
 
 enum State {
@@ -84,6 +85,7 @@ async fn handle_command(cmd: SqlCommand, conn: &mut Connection) -> Result<Event,
                 Ok(Event::None)
             }
         },
+
         SqlCommand::AddOrEditServer(server) => {
             dbg!(&server);
             let res = conn
@@ -122,6 +124,12 @@ async fn handle_command(cmd: SqlCommand, conn: &mut Connection) -> Result<Event,
                 }
             }
         }
+
+        SqlCommand::InsertMovies(movies) => {
+            let res = insert_movies(conn, movies).await;
+            dbg!(res.err());
+            Ok(Event::None)
+        }
     }
 }
 
@@ -149,8 +157,40 @@ async fn get_server_list(conn: &Connection) -> Result<Vec<KodiServer>, tokio_rus
         .await??)
 }
 
+async fn insert_movies(
+    conn: &Connection,
+    movies: Vec<MovieListItem>,
+) -> Result<(), rusqlite::Error> {
+    let movies = conn.call(|conn| {
+
+        let t = conn.transaction()?;
+        //let question_marks = format!("{}?", 1..4.join() )
+        for movie in movies {
+            t.execute("INSERT INTO movielist VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9
+            )", params![
+                movie.movieid,
+                movie.title,
+                movie.genre.join(","),
+                movie.year,
+                movie.rating,
+                movie.playcount,
+                movie.file,
+                movie.dateadded,
+                movie.premiered,
+             ])?;
+        }
+
+        t.commit()?;
+        Ok::<_, rusqlite::Error>}(())
+    ).await;
+
+    dbg!(movies.err());
+    Ok(())
+}
+
 async fn create_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
-    let x = conn.call(|conn| {conn.execute(
+    let servers = conn.call(|conn| {conn.execute(
         "CREATE TABLE IF NOT EXISTS 'servers' (
             id INTEGER PRIMARY KEY,
             name TEXT NOT NULL,
@@ -166,21 +206,49 @@ async fn create_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
     Ok::<_, rusqlite::Error>}(())
     ).await;
 
-    dbg!(x.err());
+    dbg!(servers.err());
 
-    // 'settings' (selected_server, various user configable stuff....)
-    // this will be a 'key | value' pair database to expand as needed. (key UNIQ)
+    // Not used yet:
+    // Will eventually be used for selected server etc.
+    // This technically doesn't need an ID but apparently it's
+    // best if it has one for some sql stuff?
+    // let settings = conn.call(|conn| {conn.execute(
+    //     "CREATE TABLE IF NOT EXISTS 'settings' (
+    //         setting TEXT UNIQUE,
+    //         value TEXT,
+    //     )",
+    //     [],
+    // )?;
+    // Ok::<_, rusqlite::Error>}(())
+    // ).await;
 
-    // not sure if 'videos' or 'movies' / 'episodes'
-    // 'tvshows' table probably requred in either case.
-    //     technically could store tvshow name in each entry but seems redundant.
-    // id, videotype(?), filepath, title, year, rating, playcount, thumbnail BLOB
-    // id, tvseriesid, episode, season, epname, filepath, rating, playcount, thumbnail BLOB
-    // the generic videos is *probably* ideal here and just leave them null
-    //    for the types that don't make sense (ie no ep number for movies etc)
-    // might have to be videos_<server_id> etc to keep them separate?
-    // note the kodi methods are GetMovies GetEpisodes etc so might have to separate due to that
-    // use kodi's IDs for id.
+    // dbg!(settings.err());
+
+    let movielist = conn.call(|conn| {conn.execute(
+        "CREATE TABLE IF NOT EXISTS 'movielist' (
+            movieid INTEGER PRIMARY KEY ON CONFLICT REPLACE,
+            title TEXT,
+            genre TEXT,
+            year INTEGER,
+            rating REAL,
+            playcount NUMBER,
+            file TEXT,
+            dateadded TEXT,            
+            premiered TEXT
+        )",
+        [],
+    )?;
+    Ok::<_, rusqlite::Error>}(())
+    ).await;
+
+    dbg!(movielist.err());
+
+    // Due to websocket response size limits
+    // I have to keep the movielist to minimal fields
+    // then I can create a moviedetails db with the same movieID and Join
+    //
+
+    // imagecache DB? keep the 'url' from kodi as key, and blob as value?
 
     Ok(())
 }

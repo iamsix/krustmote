@@ -69,7 +69,10 @@ async fn handle_connection(mut output: Sender<Event>, server: Arc<KodiServer>) -
     loop {
         match &mut state {
             State::Disconnected => {
-                match WsClientBuilder::default().build(server.websocket_url()).await {
+                match WsClientBuilder::default()
+                    .build(server.websocket_url())
+                    .await
+                {
                     Ok(client) => {
                         let (sender, reciever) = channel(100);
                         let _ = output.send(Event::Connected(Connection(sender))).await;
@@ -374,7 +377,10 @@ async fn handle_kodi_command(message: KodiCommand, client: &Client) -> Result<Ev
             Ok(Event::None)
         }
 
-        KodiCommand::PlayerSetAudioStream { player_id, audio_index } => {
+        KodiCommand::PlayerSetAudioStream {
+            player_id,
+            audio_index,
+        } => {
             let _response: Value = client
                 .request(
                     "Player.SetAudioStream",
@@ -400,6 +406,23 @@ async fn handle_kodi_command(message: KodiCommand, client: &Client) -> Result<Ev
             let response: Value = client.request("Input.SendText", rpc_params!(text)).await?;
             dbg!(response);
             Ok(Event::None)
+        }
+
+        // Testing...
+        // TODO: Decide if I want this to be able to directly send data to DB?
+        // can do so by cloning the SqlQonnection
+        KodiCommand::VideoLibraryGetMovies => {
+            let response: Value = client
+                .request(
+                    "VideoLibrary.GetMovies",
+                    rpc_obj_params!("properties" = MINIMAL_MOVIE_PROPS),
+                )
+                .await?;
+
+            let movies = <Vec<MovieListItem> as Deserialize>::deserialize(&response["movies"])
+                .expect("MovieListItem should deserialize");
+
+            Ok(Event::UpdateMovieList(movies))
         }
 
         // Debug command
@@ -507,4 +530,5 @@ pub enum Event {
     UpdateKodiAppStatus(KodiAppStatus),
     UpdatePlayingItem(PlayingItem), // Might change to Option
     InputRequested(String),
+    UpdateMovieList(Vec<MovieListItem>),
 }

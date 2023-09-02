@@ -2,28 +2,56 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::sync::{Arc, OnceLock};
 
-pub const FILE_PROPS: [&'static str; 20] = [
-    "title",
-    "rating",
-    "genre",
-    "artist",
-    "track",
-    "season",
-    "episode",
-    "year",
-    "duration",
-    "album",
-    "showtitle",
-    "playcount",
-    "file",
-    "mimetype",
-    "size",
-    "lastmodified",
-    "resume",
-    "art",
-    "runtime",
-    "displayartist",
-];
+#[derive(Debug, Clone, PartialEq)]
+pub enum KodiCommand {
+    GetSources(MediaType), // TODO: SortType
+    GetDirectory {
+        path: String,
+        media_type: MediaType,
+    }, // TODO: SortType
+    PlayerOpen(String),
+    InputButtonEvent {
+        button: &'static str,
+        keymap: &'static str,
+    },
+    InputExecuteAction(&'static str),
+    ToggleMute,
+    GUIActivateWindow(&'static str),
+    PlayerSeek(u8, KodiTime),
+    PlayerSetSubtitle {
+        player_id: u8,
+        subtitle_index: u8,
+        enabled: bool,
+    },
+    PlayerToggleSubtitle {
+        player_id: u8,
+        on_off: &'static str,
+    },
+    PlayerSetAudioStream {
+        player_id: u8,
+        audio_index: u8,
+    },
+    InputSendText(String),
+
+    VideoLibraryGetMovies,
+
+    PlayerGetProperties,
+    PlayerGetPlayingItem(u8),
+    PlayerGetActivePlayers,
+
+    // only used for testing/debug:
+    PlayerGetPlayingItemDebug(u8),
+    Test,
+}
+
+fn treat_error_as_none<'de, T, D>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: Deserializer<'de>,
+{
+    let value: Value = Deserialize::deserialize(deserializer)?;
+    Ok(T::deserialize(value).ok())
+}
 
 pub const PLAYER_PROPS: [&'static str; 17] = [
     "audiostreams",
@@ -44,46 +72,6 @@ pub const PLAYER_PROPS: [&'static str; 17] = [
     "videostreams",
     "currentvideostream",
 ];
-
-pub const PLAYING_ITEM_PROPS: [&'static str; 28] = [
-    "album",
-    "albumartist",
-    "artist",
-    "episode",
-    "art",
-    "file",
-    "genre",
-    "plot",
-    "rating",
-    "season",
-    "showtitle",
-    "studio",
-    "tagline",
-    "title",
-    "track",
-    "year",
-    "streamdetails",
-    "originaltitle",
-    "playcount",
-    "runtime",
-    "duration",
-    "cast",
-    "writer",
-    "director",
-    "userrating",
-    "firstaired",
-    "displayartist",
-    "uniqueid",
-];
-
-fn treat_error_as_none<'de, T, D>(deserializer: D) -> Result<Option<T>, D::Error>
-where
-    T: Deserialize<'de>,
-    D: Deserializer<'de>,
-{
-    let value: Value = Deserialize::deserialize(deserializer)?;
-    Ok(T::deserialize(value).ok())
-}
 
 #[derive(Deserialize, Clone, Debug, Default)]
 pub struct PlayerProps {
@@ -225,46 +213,6 @@ pub struct KodiAppStatus {
     //volume: u8,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum KodiCommand {
-    GetSources(MediaType), // TODO: SortType
-    GetDirectory {
-        path: String,
-        media_type: MediaType,
-    }, // TODO: SortType
-    PlayerOpen(String),
-    InputButtonEvent {
-        button: &'static str,
-        keymap: &'static str,
-    },
-    InputExecuteAction(&'static str),
-    ToggleMute,
-    GUIActivateWindow(&'static str),
-    PlayerSeek(u8, KodiTime),
-    PlayerSetSubtitle {
-        player_id: u8,
-        subtitle_index: u8,
-        enabled: bool,
-    },
-    PlayerToggleSubtitle {
-        player_id: u8,
-        on_off: &'static str,
-    },
-    PlayerSetAudioStream {
-        player_id: u8,
-        audio_index: u8,
-    },
-    InputSendText(String),
-
-    PlayerGetProperties,
-    PlayerGetPlayingItem(u8),
-    PlayerGetActivePlayers,
-
-    // only used for testing/debug:
-    PlayerGetPlayingItemDebug(u8),
-    Test,
-}
-
 #[derive(Deserialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum MediaType {
@@ -320,6 +268,29 @@ pub struct DirSort {
     pub order: &'static str,
 }
 
+pub const FILE_PROPS: [&'static str; 20] = [
+    "title",
+    "rating",
+    "genre",
+    "artist",
+    "track",
+    "season",
+    "episode",
+    "year",
+    "duration",
+    "album",
+    "showtitle",
+    "playcount",
+    "file",
+    "mimetype",
+    "size",
+    "lastmodified",
+    "resume",
+    "art",
+    "runtime",
+    "displayartist",
+];
+
 // TODO: This will need to be much more extensive
 //       in order to cover episode 'files' and movie 'files' etc.
 //       For now I'm treating everyhing as a generic directory or file.
@@ -339,7 +310,7 @@ pub struct DirList {
     pub playcount: Option<u16>,
     pub year: Option<u16>,
     #[serde(rename = "type")]
-    pub type_: VideoType, // Should be enum from string
+    pub type_: VideoType,
 }
 
 // NOTE: this leaves the image blank for now.
@@ -409,15 +380,53 @@ pub enum VideoType {
     Unknown,
 }
 
+// I'm not sure these need to be Option<>?
+// They just return blank / DefaultVideo.png otherwise.
 #[derive(Deserialize, Debug, Clone)]
 pub struct Art {
     pub thumb: Option<String>,
     pub poster: Option<String>,
+    // fanart: String,
+    // landscape: Option<String>,
+    // clearlogo: Option<String>,
+    // icon: String (never used)
 }
 
+pub const PLAYING_ITEM_PROPS: [&'static str; 28] = [
+    "album",
+    "albumartist",
+    "artist",
+    "episode",
+    "art",
+    "file",
+    "genre",
+    "plot",
+    "rating",
+    "season",
+    "showtitle",
+    "studio",
+    "tagline",
+    "title",
+    "track",
+    "year",
+    "streamdetails",
+    "originaltitle",
+    "playcount",
+    "runtime",
+    "duration",
+    "cast",
+    "writer",
+    "director",
+    "userrating",
+    "firstaired",
+    "displayartist",
+    "uniqueid",
+];
 // TODO: LOTS more info
 // Might be ListItem that's returned by playingitem?
 // note a lot of this stuff is likely reutrned blank/default instead of Option
+// I might make this very minimal then
+// dispatch deserialization to MoveProps/EpisodeProps based minimal ver
 #[derive(Deserialize, Debug, Clone, Default)]
 pub struct PlayingItem {
     pub label: String,
@@ -425,17 +434,15 @@ pub struct PlayingItem {
     // album: String,
     // artist: Struct // TODO!
     // track: i16,
-    // cast: Struct // TODO!
-    // director: Struct // TODO!
+    // cast: Vec<Cast>
+    // director: Vec<String>
     pub file: String,
     // firstaired: String, //Could convert this to date myself?
     // playcount: u8,
     // plot: String,
     // rating: f64,
     // runtime: u32, // useless for currently playing item. Might be used for ListItem?
-    // streamdetails: TODO! struct: audio<vec> video<vec> subtitle<vec>
-    //                Note they're not quite the same as the PlayerProps
-    //                models but somewhat similar
+    // streamdetails: StreamDetails,
     // studio: Struct // TODO!
     // tagline: String,
     // writer: Struct // TODO!
@@ -449,6 +456,146 @@ pub struct PlayingItem {
     #[serde(rename = "type")]
     pub type_: VideoType,
     // there's also ignored field 'userrating' but I think it's useless.
+}
+
+// pub const DETAILED_MOVIE_PROPS: [&'static str; 25] = [
+//     "title",
+//     "genre",
+//     "year",
+//     "rating",
+//     "director",
+//     "trailer",
+//     "tagline",
+//     "plot",
+//     "originaltitle",
+//     "lastplayed",
+//     "playcount",
+//     "writer",
+//     // "studio",
+//     "mpaa",
+//     "cast",
+//     "country",
+//     // "imdbnumber",
+//     "runtime",
+//     // "set",
+//     "streamdetails",
+//     // "votes",
+//     "file",
+//     // "sorttitle",
+//     "resume",
+//     "setid",
+//     "dateadded",
+//     "tag",
+//     "art",
+//     "premiered",
+//     "uniqueid",
+// ];
+
+pub const MINIMAL_MOVIE_PROPS: [&'static str; 8] = [
+    "title",
+    "year",
+    "file",
+    "dateadded",
+    "genre",
+    "rating",
+    "premiered",
+    "playcount",
+];
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct MovieListItem {
+    pub movieid: u32,
+    pub title: String,
+    pub year: u16,
+    pub file: String,
+    pub dateadded: String,
+    pub genre: Vec<String>,
+    pub rating: f64,
+    pub premiered: String,
+    pub playcount: u16,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct MovieProps {
+    pub movieid: u32,
+    pub title: String,
+    pub genre: Vec<String>,
+    pub year: u16,
+    pub rating: f64,
+    pub director: Vec<String>,
+    pub trailer: String,
+    pub tagline: String,
+    pub plot: String,
+    pub originaltitle: String,
+    pub lastplayed: String, // maybe date?
+    pub playcount: u16,
+    pub writer: Vec<String>,
+    pub mpaa: String,
+    pub cast: Vec<Cast>,
+    pub country: Vec<String>,
+    pub runtime: u32,
+    pub streamdetails: StreamDetails,
+    // votes: String,
+    pub file: String,
+    pub resume: ResumePoint,
+    pub setid: u16,
+    pub dateadded: String,
+    pub tag: Vec<String>,
+    pub art: Art,
+    pub premiered: String,
+    pub uniqueid: UniqueId,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct Cast {
+    name: String,
+    order: u16,
+    role: String,
+    thumbnail: Option<String>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct UniqueId {
+    pub imdb: String,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct ResumePoint {
+    pub position: f64,
+    pub total: f64,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct StreamDetails {
+    audio: Vec<ItemAudio>,
+    subtitle: Vec<ItemSubtitle>,
+    video: Vec<ItemVideo>,
+}
+// very similar to AudioStream but with less fields
+// Seemed easier to make a new type than option a bunch of stuff
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ItemAudio {
+    channels: u8,
+    codec: String,
+    language: String,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ItemSubtitle {
+    language: String,
+}
+
+// unlike the last 2 this has a bit more/different info than VideoStream
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ItemVideo {
+    aspect: f64,
+    codec: String,
+    duration: u32,
+    hdrtype: String,
+    height: u16,
+    width: u16,
+    language: String,
+    stereomode: String,
 }
 
 #[derive(Debug, Clone)]
