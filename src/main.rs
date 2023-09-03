@@ -74,6 +74,7 @@ struct Krustmote {
 struct ItemList {
     raw_data: Vec<Box<dyn IntoListData>>,
     virtual_list: IndexMap<usize, ListData>,
+    list_title: String,
     breadcrumb: Vec<KodiCommand>,
     filter: String,
     filtered_count: usize,
@@ -177,6 +178,7 @@ impl Application for Krustmote {
             // data: Vec::new(),
             raw_data: Vec::new(),
             virtual_list: IndexMap::new(),
+            list_title: String::from(""),
             breadcrumb: Vec::new(),
             start_offset: 0,
             visible_count: 0,
@@ -368,6 +370,9 @@ impl Application for Krustmote {
                     }
 
                     db::Event::UpdateMovieList(movies) => {
+                        // TODO: If db empty > Do Kodi query for movies
+                        self.item_list.list_title = "Movies".to_string();
+                        self.item_list.breadcrumb.clear();
                         self.item_list.raw_data =
                             movies.into_iter().map(|v| Box::new(v) as _).collect();
 
@@ -537,7 +542,8 @@ impl Krustmote {
                 self.state = State::Disconnected;
             }
 
-            client::Event::UpdateDirList(dirlist) => {
+            client::Event::UpdateDirList(dirlist, path) => {
+                self.item_list.list_title = path;
                 self.item_list.raw_data = dirlist.into_iter().map(|v| Box::new(v) as _).collect();
 
                 self.item_list.filter = "".to_string();
@@ -554,6 +560,7 @@ impl Krustmote {
             }
 
             client::Event::UpdateSources(sources) => {
+                self.item_list.list_title = "Sources".to_string();
                 self.item_list.raw_data = sources.into_iter().map(|v| Box::new(v) as _).collect();
                 self.item_list.filter = "".to_string();
                 self.item_list.start_offset = 0;

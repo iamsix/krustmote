@@ -361,10 +361,23 @@ impl IntoListData for DirList {
         } else if self.size > 0 {
             Some(format!("{:.1} MB", (self.size as f64 / 1024.0 / 1024.0)))
         } else if let Some(rating) = self.rating {
-            if rating > 0.0 {
-                Some(format!("Rating: {:.1}", rating))
+            // There's likely a better approach to parsing this.
+            let pos = self.file.chars().rev().position(|c| c == '/');
+            let filename = if let Some(pos) = pos {
+                let position = self.file.len() - pos;
+                &self.file[position..]
             } else {
-                None
+                ""
+            };
+
+            if rating > 0.0 {
+                Some(format!("Rating: {:.1} - {}", rating, filename))
+            } else {
+                if !filename.is_empty() {
+                    Some(filename.to_string())
+                } else {
+                    None
+                }
             }
         } else {
             None
@@ -572,12 +585,19 @@ pub struct MovieListItem {
 }
 
 impl IntoListData for MovieListItem {
-    // TODO: Once the DB has image data I have to build an actual imageHandle here
-    // Likely store the art URL (poster) in db. Use a hash to check for image cache hit
-    // if no hit DL image then save as ./imagecache/<hash>.[jpg/png]
     fn into_listdata(&self) -> crate::ListData {
         let on_click = crate::Message::KodiReq(KodiCommand::PlayerOpen(self.file.clone()));
-        let bottom_left = Some(format!("Rating: {:.1}", self.rating));
+
+        // There's likely a better approach to parsing this.
+        let pos = self.file.chars().rev().position(|c| c == '/');
+        let filename = if let Some(pos) = pos {
+            let position = self.file.len() - pos;
+            &self.file[position..]
+        } else {
+            ""
+        };
+
+        let bottom_left = Some(format!("Rating: {:.1} - {}", self.rating, filename));
         crate::ListData {
             label: self.title.clone(),
             on_click,

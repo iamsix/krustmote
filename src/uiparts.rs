@@ -259,13 +259,16 @@ pub(crate) fn file_list<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> {
 
     column![
         row![if krustmote.item_list.breadcrumb.len() > 1 {
-            button("..")
-                .on_press(Message::UpBreadCrumb)
-                .width(Length::Fill)
-                .height(50)
-                .style(iced::theme::Button::custom(themes::ColoredButton::ListItem))
+            button(column![
+                "..",
+                text(&krustmote.item_list.list_title).size(10)
+            ])
+            .on_press(Message::UpBreadCrumb)
+            .width(Length::Fill)
+            .height(50)
+            .style(iced::theme::Button::custom(themes::ColoredButton::ListItem))
         } else {
-            button("")
+            button(text(&krustmote.item_list.list_title))
                 .width(Length::Fill)
                 .height(50)
                 .style(iced::theme::Button::custom(themes::ColoredButton::ListItem))

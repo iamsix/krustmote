@@ -49,7 +49,7 @@ async fn handle_connection(mut output: Sender<Event>) -> ! {
                         let res = create_tables(&conn).await;
                         if res.is_err() {
                             dbg!(res.err());
-                            panic!("Sqlite err");
+                            panic!("Sqlite err creating tables");
                         }
 
                         let (sender, reciever) = channel(100);
@@ -112,11 +112,7 @@ async fn handle_command(
             get_server_list(conn).await
         }
 
-        SqlCommand::InsertMovies(movies) => {
-            let res = insert_movies(conn, movies).await;
-            dbg!(res.err());
-            Ok(Event::None)
-        }
+        SqlCommand::InsertMovies(movies) => insert_movies(conn, movies).await,
 
         SqlCommand::GetMovieList => get_movie_list(conn).await,
     }
@@ -191,10 +187,14 @@ async fn get_server_list(conn: &Connection) -> Result<Event, tokio_rusqlite::Err
 async fn insert_movies(
     conn: &Connection,
     movies: Vec<MovieListItem>,
-) -> Result<(), rusqlite::Error> {
+) -> Result<Event, tokio_rusqlite::Error> {
     let movies = conn.call(|conn| {
+        // !TODO! 
+        // This just clears the whole table and re-inserts all entries currently
+        // it could be done much more efficiently I think?
 
         let t = conn.transaction()?;
+        t.execute("DELETE FROM movielist", [])?;
         for movie in movies {
             t.execute("INSERT INTO movielist VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10
@@ -217,7 +217,7 @@ async fn insert_movies(
     ).await;
 
     dbg!(movies.err());
-    Ok(())
+    Ok(Event::None)
 }
 
 async fn create_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -240,12 +240,11 @@ async fn create_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
     dbg!(servers.err());
 
     // Not used yet:
-    // Will eventually be used for selected server etc.
-    // This technically doesn't need an ID but apparently it's
-    // best if it has one for some sql stuff?
+    // Will eventually be used for selected server and others.
+    // sort options (movie/files/etc)
     // let settings = conn.call(|conn| {conn.execute(
     //     "CREATE TABLE IF NOT EXISTS 'settings' (
-    //         setting TEXT UNIQUE,
+    //         setting TEXT PRIMARY KEY ON CONFLICT REPLACE,
     //         value TEXT,
     //     )",
     //     [],
@@ -275,12 +274,8 @@ async fn create_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
 
     dbg!(movielist.err());
 
-    // Due to websocket response size limits
-    // I have to keep the movielist to minimal fields
-    // then I can create a moviedetails db with the same movieID and Join
-    //
-
-    // imagecache DB? keep the 'url' from kodi as key, and blob as value?
+    // Due to websocket response size limits I have to keep the movielist to minimal fields
+    // I can create a moviedetails db with the same `movieid` then use JOIN
 
     Ok(())
 }

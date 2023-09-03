@@ -223,7 +223,7 @@ async fn handle_kodi_command(
                 .request(
                     "Files.GetDirectory",
                     rpc_params![
-                        path,
+                        &path,
                         media_type.as_str(),
                         FILE_PROPS,
                         DirSort {
@@ -237,7 +237,7 @@ async fn handle_kodi_command(
             let list = <Vec<DirList> as Deserialize>::deserialize(&response["files"])
                 .expect("DirList should deserialize");
 
-            Ok(Event::UpdateDirList(list))
+            Ok(Event::UpdateDirList(list, path))
         }
 
         KodiCommand::GetSources(mediatype) => {
@@ -529,7 +529,7 @@ pub enum Event {
     Disconnected,
     None,
     UpdateSources(Vec<Sources>),
-    UpdateDirList(Vec<DirList>),
+    UpdateDirList(Vec<DirList>, String),
     UpdatePlayerProps(Option<PlayerProps>),
     UpdateKodiAppStatus(KodiAppStatus),
     UpdatePlayingItem(PlayingItem), // Might change to Option
