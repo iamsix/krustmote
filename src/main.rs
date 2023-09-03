@@ -72,10 +72,11 @@ struct Krustmote {
 }
 
 struct ItemList {
-    raw_data: Vec<(usize, Box<dyn IntoListData>)>,
+    raw_data: Vec<Box<dyn IntoListData>>,
     virtual_list: IndexMap<usize, ListData>,
     breadcrumb: Vec<KodiCommand>,
     filter: String,
+    filtered_count: usize,
     start_offset: u32,
     visible_count: u32,
 }
@@ -180,6 +181,7 @@ impl Application for Krustmote {
             start_offset: 0,
             visible_count: 0,
             filter: String::from(""),
+            filtered_count: 0,
         };
         (
             Self {
@@ -266,36 +268,7 @@ impl Application for Krustmote {
                 self.item_list.start_offset = offset.saturating_sub(1);
 
                 if old != self.item_list.start_offset {
-                    let sem = Arc::new(Semaphore::new(10));
-                    let http_url = if let Some(server) = &self.kodi_status.server {
-                        server.http_url()
-                    } else {
-                        panic!("Event Shouldn't happen if there's no server")
-                    };
-
-                    //self.item_list.virtual_list = Vec::new();
-                    for (i, file) in &self.item_list.raw_data {
-                        // Initial virtual list always starts at 0
-                        //let i = i.clone();
-                        if i >= &(self.item_list.start_offset as usize)
-                            && i <= &((self.item_list.visible_count + self.item_list.start_offset)
-                                as usize)
-                        {
-                            if self.item_list.virtual_list.contains_key(i) {
-                                continue;
-                            }
-                            let pic = file.get_art_data(&http_url);
-                            let pic = get_art(&sem, pic);
-                            let mut item = file.into_listdata();
-                            item.image = pic;
-                            self.item_list.virtual_list.insert(*i, item);
-                        } else {
-                            if self.item_list.virtual_list.contains_key(i) {
-                                self.item_list.virtual_list.shift_remove(i);
-                            }
-                        }
-                    }
-                    self.item_list.virtual_list.sort_keys()
+                    self.update_virtual_list();
                 }
             }
 
@@ -343,6 +316,8 @@ impl Application for Krustmote {
             Message::FilterFileList(filter) => {
                 self.item_list.filter = filter;
                 self.item_list.start_offset = 0;
+                self.item_list.virtual_list = IndexMap::new();
+                self.update_virtual_list();
                 return scrollable::snap_to(
                     Id::new("files"),
                     scrollable::RelativeOffset { x: 0.0, y: 0.0 },
@@ -392,8 +367,18 @@ impl Application for Krustmote {
                         }
                     }
 
-                    db::Event::UpdateMovieList(_movies) => {
-                        todo!()
+                    db::Event::UpdateMovieList(movies) => {
+                        self.item_list.raw_data =
+                            movies.into_iter().map(|v| Box::new(v) as _).collect();
+
+                        self.item_list.virtual_list = IndexMap::new();
+                        self.update_virtual_list();
+
+                        self.content_area = ContentArea::Files;
+                        return scrollable::snap_to(
+                            Id::new("files"),
+                            scrollable::RelativeOffset { x: 0.0, y: 0.0 },
+                        );
                     }
 
                     db::Event::None => {}
@@ -515,16 +500,18 @@ impl Krustmote {
     }
 
     async fn download_pic(pic: Pic) -> Result<image::Handle, Box<dyn Error>> {
-        // Hash URL - check FS for ./imagecache/hash.jpng/png.
+        // Hash URL - check FS for ./imagecache/<hash>.jpg
         // if it exists image handle from that.
-        // if it does download the pic, save to FS, and return the downloaded pic.
+        // if it doesn't download the pic, save to FS, and return the downloaded pic.
+
+        // TODO! Proper path support
         let hash = fxhash::hash(&pic.url);
         let path = format!("./imagecache/{:0x}.jpg", hash);
         let file = fs::metadata(&path).await;
         let img = if let Ok(_) = file {
             imagelib::open(&path)?
         } else {
-            let img = reqwest::get(pic.url).await?;
+            let img = reqwest::get(&pic.url).await?.error_for_status()?;
             let img = img.bytes().await?;
 
             let img = imagelib::load_from_memory(&img)?;
@@ -532,7 +519,7 @@ impl Krustmote {
             img.save(&path)?;
             img
         };
-        let img = img.to_rgba8().to_vec();
+        let img = img.into_rgba8().to_vec();
 
         Ok(image::Handle::from_pixels(pic.w, pic.h, img))
     }
@@ -548,32 +535,19 @@ impl Krustmote {
             }
 
             client::Event::UpdateDirList(dirlist) => {
-                self.item_list.raw_data = Vec::new();
-                for (i, item) in dirlist.iter().enumerate() {
-                    self.item_list.raw_data.push((i, Box::new(item.to_owned())));
-                    // files.push(source.into_listdata())
-                }
-                let sem = Arc::new(Semaphore::new(10));
-                let http_url = if let Some(server) = &self.kodi_status.server {
-                    server.http_url()
-                } else {
-                    panic!("Event Shouldn't happen if there's no server")
-                };
+                self.item_list.raw_data = dirlist.into_iter().map(|v| Box::new(v) as _).collect();
+                // let sem = Arc::new(Semaphore::new(10));
+                // let http_url = if let Some(server) = &self.kodi_status.server {
+                //     server.http_url()
+                // } else {
+                //     panic!("Event Shouldn't happen if there's no server")
+                // };
 
                 self.item_list.filter = "".to_string();
                 self.item_list.start_offset = 0;
 
                 self.item_list.virtual_list = IndexMap::new();
-                for (i, file) in &self.item_list.raw_data {
-                    // Initial virtual list always starts at 0
-                    if self.item_list.virtual_list.len() < self.item_list.visible_count as usize {
-                        let pic = file.get_art_data(&http_url);
-                        let pic = get_art(&sem, pic);
-                        let mut item = file.into_listdata();
-                        item.image = pic;
-                        self.item_list.virtual_list.insert(*i, item);
-                    }
-                }
+                self.update_virtual_list();
 
                 self.content_area = ContentArea::Files;
                 return Some(scrollable::snap_to(
@@ -583,26 +557,15 @@ impl Krustmote {
             }
 
             client::Event::UpdateSources(sources) => {
-                self.item_list.raw_data = Vec::new();
-                for (i, source) in sources.iter().enumerate() {
-                    self.item_list
-                        .raw_data
-                        .push((i, Box::new(source.to_owned())));
-                    // files.push(source.into_listdata())
-                }
+                self.item_list.raw_data = sources.into_iter().map(|v| Box::new(v) as _).collect();
+                self.item_list.filter = "".to_string();
+                self.item_list.start_offset = 0;
 
                 // Sources is presumed to be small so we give the whole list as virtual
                 // TODO change this since it could be more than visible_count
                 self.item_list.virtual_list = IndexMap::new();
-                for (i, source) in &self.item_list.raw_data {
-                    //files.push(source.into_listdata());
-                    self.item_list
-                        .virtual_list
-                        .insert(*i, source.into_listdata());
-                }
+                self.update_virtual_list();
 
-                self.item_list.filter = "".to_string();
-                self.item_list.start_offset = 0;
                 self.content_area = ContentArea::Files;
                 return Some(scrollable::snap_to(
                     Id::new("files"),
@@ -666,6 +629,45 @@ impl Krustmote {
             client::Event::None => {}
         }
         None
+    }
+
+    fn update_virtual_list(&mut self) {
+        let sem = Arc::new(Semaphore::new(10));
+        let http_url = if let Some(server) = &self.kodi_status.server {
+            server.http_url()
+        } else {
+            panic!("This should never be called if there's no server")
+        };
+
+        self.item_list.filtered_count = 0;
+        //self.item_list.virtual_list = Vec::new();
+        for (i, file) in self
+            .item_list
+            .raw_data
+            .iter()
+            .filter(|i| i.label_contains(&self.item_list.filter))
+            .enumerate()
+        {
+            self.item_list.filtered_count += 1;
+            //let i = i.clone();
+            if i >= self.item_list.start_offset as usize
+                && i <= (self.item_list.visible_count + self.item_list.start_offset) as usize
+            {
+                if self.item_list.virtual_list.contains_key(&i) {
+                    continue;
+                }
+                let pic = file.get_art_data(&http_url);
+                let pic = get_art(&sem, pic);
+                let mut item = file.into_listdata();
+                item.image = pic;
+                self.item_list.virtual_list.insert(i, item);
+            } else {
+                if self.item_list.virtual_list.contains_key(&i) {
+                    self.item_list.virtual_list.shift_remove(&i);
+                }
+            }
+        }
+        self.item_list.virtual_list.sort_keys()
     }
 }
 

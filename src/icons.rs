@@ -11,6 +11,7 @@ const ICONS: Font = Font {
     ..Font::with_name("Material Icons") 
 };
 
+pub fn movie() -> Text<'static> {icon('\u{e02c}')}
 pub fn folder() -> Text<'static> {icon('\u{e2c7}')}
 pub fn settings() -> Text<'static> {icon('\u{e8b8}')}
 pub fn sync() -> Text<'static> {icon('\u{e627}')}

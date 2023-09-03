@@ -43,6 +43,7 @@ async fn handle_connection(mut output: Sender<Event>) -> ! {
     loop {
         match &mut state {
             State::Closed => {
+                // TODO! Proper path support
                 match Connection::open("./krustmote.db").await {
                     Ok(conn) => {
                         let res = create_tables(&conn).await;
@@ -158,6 +159,12 @@ async fn get_movie_list(conn: &Connection) -> Result<Vec<MovieListItem>, tokio_r
                         .split(",")
                         .map(|s| s.to_string())
                         .collect();
+                    let poster = row.get::<usize, String>(9)?;
+                    let poster = if !poster.is_empty() {
+                        Some(poster)
+                    } else {
+                        None
+                    };
                     Ok(MovieListItem {
                         movieid: row.get(0)?,
                         title: row.get(1)?,
@@ -168,6 +175,10 @@ async fn get_movie_list(conn: &Connection) -> Result<Vec<MovieListItem>, tokio_r
                         file: row.get(6)?,
                         dateadded: row.get(7)?,
                         premiered: row.get(8)?,
+                        art: Art {
+                            poster,
+                            thumb: None,
+                        },
                     })
                 })?
                 .collect::<Result<Vec<MovieListItem>, rusqlite::Error>>();
@@ -209,7 +220,7 @@ async fn insert_movies(
         let t = conn.transaction()?;
         for movie in movies {
             t.execute("INSERT INTO movielist VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10
             )", params![
                 movie.movieid,
                 movie.title,
@@ -220,6 +231,7 @@ async fn insert_movies(
                 movie.file,
                 movie.dateadded,
                 movie.premiered,
+                movie.art.poster.unwrap_or("".to_string()),
              ])?;
         }
 
@@ -276,7 +288,8 @@ async fn create_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
             playcount NUMBER,
             file TEXT,
             dateadded TEXT,            
-            premiered TEXT
+            premiered TEXT,
+            art TEXT
         )",
         [],
     )?;

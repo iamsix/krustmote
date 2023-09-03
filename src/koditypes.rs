@@ -56,6 +56,7 @@ where
 pub trait IntoListData {
     fn into_listdata(&self) -> crate::ListData;
     fn get_art_data(&self, http_url: &String) -> Pic;
+    fn label_contains(&self, find: &String) -> bool;
 }
 
 pub struct Pic {
@@ -278,6 +279,10 @@ impl IntoListData for Sources {
             w: 0,
         }
     }
+
+    fn label_contains(&self, find: &String) -> bool {
+        self.label.to_lowercase().contains(&find.to_lowercase())
+    }
 }
 
 // TODO: SortType that defines these
@@ -413,6 +418,10 @@ impl IntoListData for DirList {
             }
         }
     }
+
+    fn label_contains(&self, find: &String) -> bool {
+        self.label.to_lowercase().contains(&find.to_lowercase())
+    }
 }
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Default)]
@@ -536,7 +545,7 @@ pub struct PlayingItem {
 //     "uniqueid",
 // ];
 
-pub const MINIMAL_MOVIE_PROPS: [&'static str; 8] = [
+pub const MINIMAL_MOVIE_PROPS: [&'static str; 9] = [
     "title",
     "year",
     "file",
@@ -545,6 +554,7 @@ pub const MINIMAL_MOVIE_PROPS: [&'static str; 8] = [
     "rating",
     "premiered",
     "playcount",
+    "art",
 ];
 
 #[derive(Deserialize, Debug, Clone)]
@@ -558,23 +568,46 @@ pub struct MovieListItem {
     pub rating: f64,
     pub premiered: String,
     pub playcount: u16,
+    pub art: Art,
 }
 
-impl Into<crate::ListData> for MovieListItem {
+impl IntoListData for MovieListItem {
     // TODO: Once the DB has image data I have to build an actual imageHandle here
     // Likely store the art URL (poster) in db. Use a hash to check for image cache hit
     // if no hit DL image then save as ./imagecache/<hash>.[jpg/png]
-    fn into(self) -> crate::ListData {
-        let on_click = crate::Message::KodiReq(KodiCommand::PlayerOpen(self.file));
+    fn into_listdata(&self) -> crate::ListData {
+        let on_click = crate::Message::KodiReq(KodiCommand::PlayerOpen(self.file.clone()));
         let bottom_left = Some(format!("Rating: {:.1}", self.rating));
         crate::ListData {
-            label: self.title,
+            label: self.title.clone(),
             on_click,
             play_count: Some(self.playcount),
             bottom_left,
             bottom_right: Some(self.year.to_string()),
             image: Arc::new(OnceLock::new()),
         }
+    }
+
+    fn get_art_data(&self, http_url: &String) -> Pic {
+        if self.art.poster.is_some() {
+            let poster = self.art.poster.as_ref().unwrap();
+            let poster = urlencoding::encode(poster.as_str());
+            Pic {
+                url: format!("{}/image/{}", http_url, poster),
+                w: 80,
+                h: 120,
+            }
+        } else {
+            Pic {
+                url: "".to_string(),
+                h: 0,
+                w: 0,
+            }
+        }
+    }
+
+    fn label_contains(&self, find: &String) -> bool {
+        self.title.to_lowercase().contains(&find.to_lowercase())
     }
 }
 

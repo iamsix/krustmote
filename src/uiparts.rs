@@ -14,6 +14,7 @@ use super::BLANK_IMAGE;
 use super::ITEM_HEIGHT;
 use super::{ListData, Message, Modals, State};
 
+use crate::db;
 use crate::icons;
 use crate::koditypes::*;
 use crate::themes;
@@ -244,9 +245,13 @@ pub(crate) fn file_list<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> {
 
     let len = krustmote.item_list.raw_data.len() as u32;
 
-    let bottom_space = (len * ITEM_HEIGHT)
-        .saturating_sub(krustmote.item_list.visible_count * ITEM_HEIGHT)
-        .saturating_sub(offset * ITEM_HEIGHT);
+    let bottom_space = if !krustmote.item_list.filter.is_empty() {
+        krustmote.item_list.filtered_count as u32 * ITEM_HEIGHT
+    } else {
+        len * ITEM_HEIGHT
+    }
+    .saturating_sub(krustmote.item_list.visible_count * ITEM_HEIGHT)
+    .saturating_sub(offset * ITEM_HEIGHT);
 
     virtual_list.push(Space::new(10, bottom_space as f32).into());
 
@@ -361,6 +366,10 @@ pub(crate) fn left_menu<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
             Rule::horizontal(20),
             button(row![icons::folder(), "Files"].align_items(iced::Alignment::Center))
                 .on_press(Message::KodiReq(KodiCommand::GetSources(MediaType::Video)))
+                .width(Length::Fill)
+                .style(theme::Button::custom(bare)),
+            button(row![icons::movie(), "Movies"].align_items(iced::Alignment::Center))
+                .on_press(Message::DbQuery(db::SqlCommand::GetMovieList))
                 .width(Length::Fill)
                 .style(theme::Button::custom(bare)),
             button(row![icons::settings(), "Settings"].align_items(iced::Alignment::Center))
