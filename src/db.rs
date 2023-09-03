@@ -145,6 +145,7 @@ async fn handle_command(cmd: SqlCommand, conn: &mut Connection) -> Result<Event,
     }
 }
 
+// TODO Change this (and get_get_server_list to return an event directly)
 async fn get_movie_list(conn: &Connection) -> Result<Vec<MovieListItem>, tokio_rusqlite::Error> {
     Ok(conn
         .call(|conn| {

@@ -1,4 +1,5 @@
 /target
+/imagecache
 .vscode/
 # scratch file used for testing things
 test.rs

@@ -228,41 +228,25 @@ pub(crate) fn loading<'a>(_krustmote: &'a Krustmote) -> Element<'a, Message> {
 pub(crate) fn file_list<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> {
     let offset = krustmote.item_list.start_offset;
 
-    let count =
-        (offset + krustmote.item_list.visible_count).min(krustmote.item_list.data.len() as u32);
-
     let mut virtual_list: Vec<Element<'a, Message>> = Vec::new();
 
     let top_space = offset * ITEM_HEIGHT;
     virtual_list.push(Space::new(10, top_space as f32).into());
 
-    let mut precount = 0;
     let files = krustmote
         .item_list
-        .data
+        .virtual_list
         .iter()
-        .filter(|&x| {
-            x.label
-                .to_lowercase()
-                .contains(&krustmote.item_list.filter.to_lowercase())
-        })
-        .enumerate()
-        .filter(|&(i, _)| {
-            precount = i;
-            i as u32 >= offset && i as u32 <= count
-        })
-        .map(|(_, data)| make_listitem(data))
+        .map(|(_, d)| make_listitem(d))
         .map(Element::from);
 
     virtual_list.extend(files);
 
-    let bottom_space = if !krustmote.item_list.filter.is_empty() {
-        precount as u32 * ITEM_HEIGHT
-    } else {
-        krustmote.item_list.data.len() as u32 * ITEM_HEIGHT
-    }
-    .saturating_sub(offset * ITEM_HEIGHT)
-    .saturating_sub(krustmote.item_list.visible_count * ITEM_HEIGHT);
+    let len = krustmote.item_list.raw_data.len() as u32;
+
+    let bottom_space = (len * ITEM_HEIGHT)
+        .saturating_sub(krustmote.item_list.visible_count * ITEM_HEIGHT)
+        .saturating_sub(offset * ITEM_HEIGHT);
 
     virtual_list.push(Space::new(10, bottom_space as f32).into());
 

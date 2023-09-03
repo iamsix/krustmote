@@ -53,6 +53,17 @@ where
     Ok(T::deserialize(value).ok())
 }
 
+pub trait IntoListData {
+    fn into_listdata(&self) -> crate::ListData;
+    fn get_art_data(&self, http_url: &String) -> Pic;
+}
+
+pub struct Pic {
+    pub url: String,
+    pub h: u32,
+    pub w: u32,
+}
+
 pub const PLAYER_PROPS: [&'static str; 17] = [
     "audiostreams",
     "canseek",
@@ -245,18 +256,26 @@ pub struct Sources {
     pub file: String,
 }
 
-impl Into<crate::ListData> for Sources {
-    fn into(self) -> crate::ListData {
+impl IntoListData for Sources {
+    fn into_listdata(&self) -> crate::ListData {
         crate::ListData {
-            label: self.label,
+            label: self.label.clone(),
             on_click: crate::Message::KodiReq(KodiCommand::GetDirectory {
-                path: self.file,
+                path: self.file.clone(),
                 media_type: MediaType::Video,
             }),
             play_count: None,
             bottom_right: None,
             bottom_left: None,
             image: Arc::new(OnceLock::new()),
+        }
+    }
+
+    fn get_art_data(&self, _: &String) -> Pic {
+        Pic {
+            url: "".to_string(),
+            h: 0,
+            w: 0,
         }
     }
 }
@@ -315,18 +334,18 @@ pub struct DirList {
 
 // NOTE: this leaves the image blank for now.
 // Could probably fix that by doing Into<Vec<ListData> for Vec<DirList>
-impl Into<crate::ListData> for DirList {
-    fn into(self) -> crate::ListData {
+impl IntoListData for DirList {
+    fn into_listdata(&self) -> crate::ListData {
         let label = if self.type_ == VideoType::Episode {
             format!(
                 "{} - S{:02}E{:02} - {}",
-                self.showtitle.unwrap_or("".to_string()),
+                self.showtitle.clone().unwrap_or("".to_string()),
                 self.season.unwrap_or(0),
                 self.episode.unwrap_or(0),
-                self.title.unwrap_or("".to_string()),
+                self.title.clone().unwrap_or("".to_string()),
             )
         } else {
-            self.label
+            self.label.clone()
         };
 
         let bottom_left = if self.size > 1_073_741_824 {
@@ -349,23 +368,49 @@ impl Into<crate::ListData> for DirList {
         let bottom_right = if self.type_ == VideoType::Movie {
             Some(format!("{}", self.year.unwrap()))
         } else {
-            Some(self.lastmodified)
+            Some(self.lastmodified.clone())
         };
 
         crate::ListData {
             label,
             on_click: crate::Message::KodiReq(match self.filetype.as_str() {
                 "directory" => KodiCommand::GetDirectory {
-                    path: self.file,
+                    path: self.file.clone(),
                     media_type: MediaType::Video,
                 },
-                "file" => KodiCommand::PlayerOpen(self.file),
+                "file" => KodiCommand::PlayerOpen(self.file.clone()),
                 _ => panic!("Impossible kodi filetype {}", self.filetype),
             }),
             play_count: self.playcount,
             bottom_right,
             bottom_left,
             image: Arc::new(OnceLock::new()),
+        }
+    }
+
+    fn get_art_data(&self, http_url: &String) -> Pic {
+        if self.type_ == VideoType::Episode && self.art.thumb.is_some() {
+            let thumb = self.art.thumb.as_ref().unwrap();
+            let thumb = urlencoding::encode(thumb.as_str());
+            Pic {
+                url: format!("{}/image/{}", http_url, thumb),
+                w: 192,
+                h: 108,
+            }
+        } else if self.art.poster.is_some() {
+            let poster = self.art.poster.as_ref().unwrap();
+            let poster = urlencoding::encode(poster.as_str());
+            Pic {
+                url: format!("{}/image/{}", http_url, poster),
+                w: 80,
+                h: 120,
+            }
+        } else {
+            Pic {
+                url: "".to_string(),
+                h: 0,
+                w: 0,
+            }
         }
     }
 }

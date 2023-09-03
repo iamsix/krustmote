@@ -8,10 +8,13 @@ use iced::widget::{column, container, image, row, scrollable};
 use iced::{subscription, window, Application, Command, Element, Event, Length, Settings};
 
 use ::image as imagelib;
+use fxhash;
 use reqwest;
+use tokio::fs;
 use tokio::sync::Semaphore;
-use urlencoding;
+// use urlencoding;
 
+use indexmap::IndexMap;
 use std::error::Error;
 use std::sync::{Arc, OnceLock};
 use tokio;
@@ -69,7 +72,8 @@ struct Krustmote {
 }
 
 struct ItemList {
-    data: Vec<ListData>,
+    raw_data: Vec<(usize, Box<dyn IntoListData>)>,
+    virtual_list: IndexMap<usize, ListData>,
     breadcrumb: Vec<KodiCommand>,
     filter: String,
     start_offset: u32,
@@ -169,7 +173,9 @@ impl Application for Krustmote {
         };
 
         let item_list = ItemList {
-            data: Vec::new(),
+            // data: Vec::new(),
+            raw_data: Vec::new(),
+            virtual_list: IndexMap::new(),
             breadcrumb: Vec::new(),
             start_offset: 0,
             visible_count: 0,
@@ -255,8 +261,42 @@ impl Application for Krustmote {
             }
 
             Message::Scrolled(view) => {
+                let old = self.item_list.start_offset;
                 let offset = (view.absolute_offset().y / ITEM_HEIGHT as f32) as u32;
                 self.item_list.start_offset = offset.saturating_sub(1);
+
+                if old != self.item_list.start_offset {
+                    let sem = Arc::new(Semaphore::new(10));
+                    let http_url = if let Some(server) = &self.kodi_status.server {
+                        server.http_url()
+                    } else {
+                        panic!("Event Shouldn't happen if there's no server")
+                    };
+
+                    //self.item_list.virtual_list = Vec::new();
+                    for (i, file) in &self.item_list.raw_data {
+                        // Initial virtual list always starts at 0
+                        //let i = i.clone();
+                        if i >= &(self.item_list.start_offset as usize)
+                            && i <= &((self.item_list.visible_count + self.item_list.start_offset)
+                                as usize)
+                        {
+                            if self.item_list.virtual_list.contains_key(i) {
+                                continue;
+                            }
+                            let pic = file.get_art_data(&http_url);
+                            let pic = get_art(&sem, pic);
+                            let mut item = file.into_listdata();
+                            item.image = pic;
+                            self.item_list.virtual_list.insert(*i, item);
+                        } else {
+                            if self.item_list.virtual_list.contains_key(i) {
+                                self.item_list.virtual_list.shift_remove(i);
+                            }
+                        }
+                    }
+                    self.item_list.virtual_list.sort_keys()
+                }
             }
 
             Message::SubtitlePicked(sub) => {
@@ -350,6 +390,10 @@ impl Application for Krustmote {
                             self.kodi_status.server = Some(Arc::new(servers[0].clone()));
                             self.content_area = ContentArea::Files;
                         }
+                    }
+
+                    db::Event::UpdateMovieList(_movies) => {
+                        todo!()
                     }
 
                     db::Event::None => {}
@@ -471,11 +515,23 @@ impl Krustmote {
     }
 
     async fn download_pic(pic: Pic) -> Result<image::Handle, Box<dyn Error>> {
-        let img = reqwest::get(pic.url).await?;
-        let img = img.bytes().await?;
+        // Hash URL - check FS for ./imagecache/hash.jpng/png.
+        // if it exists image handle from that.
+        // if it does download the pic, save to FS, and return the downloaded pic.
+        let hash = fxhash::hash(&pic.url);
+        let path = format!("./imagecache/{:0x}.jpg", hash);
+        let file = fs::metadata(&path).await;
+        let img = if let Ok(_) = file {
+            imagelib::open(&path)?
+        } else {
+            let img = reqwest::get(pic.url).await?;
+            let img = img.bytes().await?;
 
-        let img = imagelib::load_from_memory(&img)?;
-        let img = img.resize_to_fill(pic.w, pic.h, imagelib::imageops::FilterType::Nearest);
+            let img = imagelib::load_from_memory(&img)?;
+            let img = img.resize_to_fill(pic.w, pic.h, imagelib::imageops::FilterType::Nearest);
+            img.save(&path)?;
+            img
+        };
         let img = img.to_rgba8().to_vec();
 
         Ok(image::Handle::from_pixels(pic.w, pic.h, img))
@@ -492,25 +548,33 @@ impl Krustmote {
             }
 
             client::Event::UpdateDirList(dirlist) => {
+                self.item_list.raw_data = Vec::new();
+                for (i, item) in dirlist.iter().enumerate() {
+                    self.item_list.raw_data.push((i, Box::new(item.to_owned())));
+                    // files.push(source.into_listdata())
+                }
                 let sem = Arc::new(Semaphore::new(10));
-                let mut files: Vec<ListData> = Vec::new();
                 let http_url = if let Some(server) = &self.kodi_status.server {
                     server.http_url()
                 } else {
-                    panic!("Shouldn't be called if there's no server")
+                    panic!("Event Shouldn't happen if there's no server")
                 };
-                for file in dirlist {
-                    let pic = get_art_url(&file, &http_url);
-                    let pic = get_art(&sem, pic);
-
-                    let mut item: ListData = file.into();
-                    item.image = pic;
-                    files.push(item);
-                }
-                self.item_list.data = files;
 
                 self.item_list.filter = "".to_string();
                 self.item_list.start_offset = 0;
+
+                self.item_list.virtual_list = IndexMap::new();
+                for (i, file) in &self.item_list.raw_data {
+                    // Initial virtual list always starts at 0
+                    if self.item_list.virtual_list.len() < self.item_list.visible_count as usize {
+                        let pic = file.get_art_data(&http_url);
+                        let pic = get_art(&sem, pic);
+                        let mut item = file.into_listdata();
+                        item.image = pic;
+                        self.item_list.virtual_list.insert(*i, item);
+                    }
+                }
+
                 self.content_area = ContentArea::Files;
                 return Some(scrollable::snap_to(
                     Id::new("files"),
@@ -519,11 +583,23 @@ impl Krustmote {
             }
 
             client::Event::UpdateSources(sources) => {
-                let mut files: Vec<ListData> = Vec::new();
-                for source in sources {
-                    files.push(source.into())
+                self.item_list.raw_data = Vec::new();
+                for (i, source) in sources.iter().enumerate() {
+                    self.item_list
+                        .raw_data
+                        .push((i, Box::new(source.to_owned())));
+                    // files.push(source.into_listdata())
                 }
-                self.item_list.data = files;
+
+                // Sources is presumed to be small so we give the whole list as virtual
+                // TODO change this since it could be more than visible_count
+                self.item_list.virtual_list = IndexMap::new();
+                for (i, source) in &self.item_list.raw_data {
+                    //files.push(source.into_listdata());
+                    self.item_list
+                        .virtual_list
+                        .insert(*i, source.into_listdata());
+                }
 
                 self.item_list.filter = "".to_string();
                 self.item_list.start_offset = 0;
@@ -593,12 +669,6 @@ impl Krustmote {
     }
 }
 
-struct Pic {
-    url: String,
-    h: u32,
-    w: u32,
-}
-
 fn get_art(sem: &Arc<Semaphore>, pic: Pic) -> Arc<OnceLock<image::Handle>> {
     if !pic.url.is_empty() {
         // This semaphore limits it to 10 hits on the server at a time.
@@ -617,31 +687,5 @@ fn get_art(sem: &Arc<Semaphore>, pic: Pic) -> Arc<OnceLock<image::Handle>> {
         lock
     } else {
         Arc::new(OnceLock::new())
-    }
-}
-
-fn get_art_url(file: &DirList, http_url: &String) -> Pic {
-    if file.type_ == VideoType::Episode && file.art.thumb.is_some() {
-        let thumb = file.art.thumb.as_ref().unwrap();
-        let thumb = urlencoding::encode(thumb.as_str());
-        Pic {
-            url: format!("{}/image/{}", http_url, thumb),
-            w: 192,
-            h: 108,
-        }
-    } else if file.art.poster.is_some() {
-        let poster = file.art.poster.as_ref().unwrap();
-        let poster = urlencoding::encode(poster.as_str());
-        Pic {
-            url: format!("{}/image/{}", http_url, poster),
-            w: 80,
-            h: 120,
-        }
-    } else {
-        Pic {
-            url: "".to_string(),
-            h: 0,
-            w: 0,
-        }
     }
 }
