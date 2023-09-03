@@ -243,12 +243,10 @@ pub(crate) fn file_list<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> {
 
     virtual_list.extend(files);
 
-    let len = krustmote.item_list.raw_data.len() as u32;
-
     let bottom_space = if !krustmote.item_list.filter.is_empty() {
         krustmote.item_list.filtered_count as u32 * ITEM_HEIGHT
     } else {
-        len * ITEM_HEIGHT
+        krustmote.item_list.raw_data.len() as u32 * ITEM_HEIGHT
     }
     .saturating_sub(krustmote.item_list.visible_count * ITEM_HEIGHT)
     .saturating_sub(offset * ITEM_HEIGHT);

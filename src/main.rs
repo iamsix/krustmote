@@ -371,6 +371,9 @@ impl Application for Krustmote {
                         self.item_list.raw_data =
                             movies.into_iter().map(|v| Box::new(v) as _).collect();
 
+                        self.item_list.filter = "".to_string();
+                        self.item_list.start_offset = 0;
+
                         self.item_list.virtual_list = IndexMap::new();
                         self.update_virtual_list();
 
@@ -536,12 +539,6 @@ impl Krustmote {
 
             client::Event::UpdateDirList(dirlist) => {
                 self.item_list.raw_data = dirlist.into_iter().map(|v| Box::new(v) as _).collect();
-                // let sem = Arc::new(Semaphore::new(10));
-                // let http_url = if let Some(server) = &self.kodi_status.server {
-                //     server.http_url()
-                // } else {
-                //     panic!("Event Shouldn't happen if there's no server")
-                // };
 
                 self.item_list.filter = "".to_string();
                 self.item_list.start_offset = 0;

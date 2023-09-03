@@ -75,18 +75,12 @@ async fn handle_connection(mut output: Sender<Event>) -> ! {
     }
 }
 
-async fn handle_command(cmd: SqlCommand, conn: &mut Connection) -> Result<Event, rusqlite::Error> {
+async fn handle_command(
+    cmd: SqlCommand,
+    conn: &mut Connection,
+) -> Result<Event, tokio_rusqlite::Error> {
     match cmd {
-        SqlCommand::GetServers => match get_server_list(conn).await {
-            Ok(servers) => {
-                let cmd = Event::UpdateServers(servers);
-                Ok(cmd)
-            }
-            Err(err) => {
-                dbg!(err);
-                Ok(Event::None)
-            }
-        },
+        SqlCommand::GetServers => get_server_list(conn).await,
 
         SqlCommand::AddOrEditServer(server) => {
             dbg!(&server);
@@ -115,16 +109,7 @@ async fn handle_command(cmd: SqlCommand, conn: &mut Connection) -> Result<Event,
             dbg!(res.err());
 
             // Now send UpdateServers (hopefully) to let front end know
-            match get_server_list(conn).await {
-                Ok(servers) => {
-                    let cmd = Event::UpdateServers(servers);
-                    Ok(cmd)
-                }
-                Err(err) => {
-                    dbg!(err);
-                    Ok(Event::None)
-                }
-            }
+            get_server_list(conn).await
         }
 
         SqlCommand::InsertMovies(movies) => {
@@ -133,24 +118,14 @@ async fn handle_command(cmd: SqlCommand, conn: &mut Connection) -> Result<Event,
             Ok(Event::None)
         }
 
-        SqlCommand::GetMovieList => {
-            let res = get_movie_list(conn).await;
-            if let Ok(res) = res {
-                //dbg!(res);
-                Ok(Event::UpdateMovieList(res))
-            } else {
-                dbg!(res.err());
-                Ok(Event::None)
-            }
-        }
+        SqlCommand::GetMovieList => get_movie_list(conn).await,
     }
 }
 
-// TODO Change this (and get_get_server_list to return an event directly)
-async fn get_movie_list(conn: &Connection) -> Result<Vec<MovieListItem>, tokio_rusqlite::Error> {
-    Ok(conn
+async fn get_movie_list(conn: &Connection) -> Result<Event, tokio_rusqlite::Error> {
+    let movies = conn
         .call(|conn| {
-            let q = "SELECT * FROM movielist";
+            let q = "SELECT * FROM movielist ORDER BY dateadded DESC";
             let mut stmt = conn.prepare(q)?;
             let movies = stmt
                 .query_map([], |row| {
@@ -184,11 +159,12 @@ async fn get_movie_list(conn: &Connection) -> Result<Vec<MovieListItem>, tokio_r
                 .collect::<Result<Vec<MovieListItem>, rusqlite::Error>>();
             Ok::<_, rusqlite::Error>(movies)
         })
-        .await??)
+        .await??;
+    Ok(Event::UpdateMovieList(movies))
 }
 
-async fn get_server_list(conn: &Connection) -> Result<Vec<KodiServer>, tokio_rusqlite::Error> {
-    Ok(conn
+async fn get_server_list(conn: &Connection) -> Result<Event, tokio_rusqlite::Error> {
+    let servers = conn
         .call(|conn| {
             let q = "SELECT * FROM servers";
             let mut stmt = conn.prepare(q)?;
@@ -208,7 +184,8 @@ async fn get_server_list(conn: &Connection) -> Result<Vec<KodiServer>, tokio_rus
                 .collect::<Result<Vec<KodiServer>, rusqlite::Error>>();
             Ok::<_, rusqlite::Error>(servers)
         })
-        .await??)
+        .await??;
+    Ok(Event::UpdateServers(servers))
 }
 
 async fn insert_movies(
