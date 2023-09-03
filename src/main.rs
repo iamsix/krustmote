@@ -2,6 +2,7 @@ use iced::executor;
 use iced::font;
 use iced::theme::Theme;
 use iced::widget::scrollable::Id;
+use iced::widget::text_input;
 // use iced::time;
 use iced::widget::{column, container, image, row, scrollable};
 
@@ -10,6 +11,7 @@ use iced::{subscription, window, Application, Command, Element, Event, Length, S
 use ::image as imagelib;
 use fxhash;
 use reqwest;
+use std::path::Path;
 use tokio::fs;
 use tokio::sync::Semaphore;
 // use urlencoding;
@@ -316,14 +318,20 @@ impl Application for Krustmote {
             }
 
             Message::FilterFileList(filter) => {
+                let mut cmds = vec![scrollable::snap_to(
+                    Id::new("files"),
+                    scrollable::RelativeOffset { x: 0.0, y: 0.0 },
+                )];
+                if filter.is_empty() {
+                    cmds.push(text_input::focus(text_input::Id::new("Filter")))
+                }
+
                 self.item_list.filter = filter;
                 self.item_list.start_offset = 0;
                 self.item_list.virtual_list = IndexMap::new();
                 self.update_virtual_list();
-                return scrollable::snap_to(
-                    Id::new("files"),
-                    scrollable::RelativeOffset { x: 0.0, y: 0.0 },
-                );
+
+                return Command::batch(cmds);
             }
 
             Message::SliderChanged(new) => {
@@ -515,21 +523,25 @@ impl Krustmote {
         // TODO! Proper path support
         let hash = fxhash::hash(&pic.url);
         let path = format!("./imagecache/{:0x}.jpg", hash);
-        let file = fs::metadata(&path).await;
-        let img = if let Ok(_) = file {
-            imagelib::open(&path)?
+        let path = Path::new(&path);
+        let img = if fs::metadata(path).await.is_ok() {
+            imagelib::open(path)?
+        } else if fs::metadata(path.with_extension("png")).await.is_ok() {
+            imagelib::open(path.with_extension("png"))?
         } else {
             let img = reqwest::get(&pic.url).await?.error_for_status()?;
             let img = img.bytes().await?;
 
             let img = imagelib::load_from_memory(&img)?;
             let img = img.resize_to_fill(pic.w, pic.h, imagelib::imageops::FilterType::Nearest);
-            img.save(&path)?;
+            img.save(path)?;
             img
         };
+        let w = img.width();
+        let h = img.height();
         let img = img.into_rgba8().to_vec();
 
-        Ok(image::Handle::from_pixels(pic.w, pic.h, img))
+        Ok(image::Handle::from_pixels(w, h, img))
     }
 
     fn handle_server_event(&mut self, event: client::Event) -> Option<Command<Message>> {

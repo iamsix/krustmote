@@ -2,6 +2,7 @@ use iced::Color;
 use iced::Element;
 use iced::Length;
 
+use iced::font::{Family, Font, Weight};
 use iced::theme;
 use iced::widget::scrollable::Id;
 use iced::widget::{
@@ -150,7 +151,11 @@ pub(crate) fn playing_bar<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
                         ))
                         .size(14),
                     ],
-                    text(krustmote.kodi_status.playing_title.clone()),
+                    text(&krustmote.kodi_status.playing_title).font(Font {
+                        family: Family::SansSerif,
+                        weight: Weight::Bold,
+                        ..Default::default()
+                    }),
                 ]
                 .width(Length::FillPortion(60)),
                 row![
@@ -205,7 +210,10 @@ pub(crate) fn top_bar<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
             .on_press(Message::ToggleLeftMenu)
             .style(theme::Button::custom(themes::ColoredButton::Bare)),
         Space::new(Length::Fill, Length::Shrink),
-        text_input("Filter..", &krustmote.item_list.filter).on_input(Message::FilterFileList),
+        text_input("Filter..", &krustmote.item_list.filter)
+            .on_input(Message::FilterFileList)
+            .id(text_input::Id::new("Filter")),
+        button(" x ").on_press(Message::FilterFileList("".to_string()))
     ])
     .into()
 }

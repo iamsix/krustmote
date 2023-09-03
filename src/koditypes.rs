@@ -424,10 +424,15 @@ impl IntoListData for DirList {
                 h: 120,
             }
         } else {
+            let icon = if self.filetype.eq_ignore_ascii_case("directory") {
+                urlencoding::encode("image://DefaultFolder.png/")
+            } else {
+                urlencoding::encode("image://DefaultFile.png/")
+            };
             Pic {
-                url: "".to_string(),
-                h: 0,
-                w: 0,
+                url: format!("{}/image/{}", http_url, icon),
+                h: 120,
+                w: 80,
             }
         }
     }
