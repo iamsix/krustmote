@@ -517,33 +517,36 @@ impl Krustmote {
         command.expect("List should have an entry if this is callable")
     }
 
-    async fn download_pic(pic: Pic) -> Result<image::Handle, Box<dyn Error>> {
-        // Hash URL - check FS for ./imagecache/<hash>.jpg
-        // if it exists image handle from that.
-        // if it doesn't download the pic, save to FS, and return the downloaded pic.
-
-        // TODO! Proper path support
-        let hash = fxhash::hash(&pic.url);
-        let path = format!("./imagecache/{:0x}.jpg", hash);
-        let path = Path::new(&path);
+    // TODO! Proper path support! (if the dir doesn't exist this will fail)
+    // I wanted this to be an option but the imagelib::open returns a result.
+    // so it seems easier.
+    async fn cache_hit(path: &Path) -> Result<image::Handle, Box<dyn Error + Send + Sync>> {
         let img = if fs::metadata(path).await.is_ok() {
             imagelib::open(path)?
         } else if fs::metadata(path.with_extension("png")).await.is_ok() {
             imagelib::open(path.with_extension("png"))?
         } else {
-            let img = reqwest::get(&pic.url).await?.error_for_status()?;
-            let img = img.bytes().await?;
-
-            let img = imagelib::load_from_memory(&img)?;
-            let img = img.resize_to_fill(pic.w, pic.h, imagelib::imageops::FilterType::Nearest);
-            img.save(path)?;
-            img
+            return Err("No cache hit".into());
         };
         let w = img.width();
         let h = img.height();
         let img = img.into_rgba8().to_vec();
-
         Ok(image::Handle::from_pixels(w, h, img))
+    }
+
+    async fn download_pic(
+        pic: Pic,
+        cache_path: &Path,
+    ) -> Result<image::Handle, Box<dyn Error + Send + Sync>> {
+        let img = reqwest::get(&pic.url).await?.error_for_status()?;
+        let img = img.bytes().await?;
+
+        let img = imagelib::load_from_memory(&img)?;
+        let img = img.resize_to_fill(pic.w, pic.h, imagelib::imageops::FilterType::Nearest);
+        img.save(cache_path)?;
+        let img = img.into_rgba8().to_vec();
+
+        Ok(image::Handle::from_pixels(pic.w, pic.h, img))
     }
 
     fn handle_server_event(&mut self, event: client::Event) -> Option<Command<Message>> {
@@ -691,13 +694,23 @@ impl Krustmote {
 
 fn get_art(sem: &Arc<&'static Semaphore>, pic: Pic) -> Arc<OnceLock<image::Handle>> {
     if !pic.url.is_empty() {
+        // Check cache hit before semaphore await for possible 'early return'
         // This semaphore limits it to 10 hits on the server at a time.
         let permit = Arc::clone(sem).acquire(); // .acquire_owned();
         let lock = Arc::new(OnceLock::new());
         let c_lock = Arc::clone(&lock);
         tokio::spawn(async move {
-            let _permit = permit.await;
-            let res = Krustmote::download_pic(pic).await;
+            let hash = fxhash::hash(&pic.url);
+            let path = format!("./imagecache/{:0x}.jpg", hash);
+            let path = Path::new(&path);
+
+            let res = Krustmote::cache_hit(&path).await;
+            let res = if res.is_ok() {
+                res
+            } else {
+                let _permit = permit.await;
+                Krustmote::download_pic(pic, &path).await
+            };
             if let Ok(res) = res {
                 let _ = c_lock.set(res);
             } else {
