@@ -188,7 +188,7 @@ pub(crate) fn playing_bar<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
                         button(icons::hearing())
                             .on_press(Message::ShowModal(Modals::Audio))
                             .style(theme::Button::custom(bare)),
-                        button(icons::smart_display()).style(theme::Button::custom(bare)),
+                        button(icons::videocam()).style(theme::Button::custom(bare)),
                     ],
                     Space::new(10, 5),
                 ]
@@ -373,10 +373,17 @@ pub(crate) fn left_menu<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
             ]
             .align_items(iced::Alignment::Center),
             Rule::horizontal(20),
-            button(row![icons::folder(), "Files"].align_items(iced::Alignment::Center))
-                .on_press(Message::KodiReq(KodiCommand::GetSources(MediaType::Video)))
+            if let crate::State::Connected(..) = krustmote.state {
+                container(
+                    button(row![icons::folder(), "Files"].align_items(iced::Alignment::Center))
+                        .on_press(Message::KodiReq(KodiCommand::GetSources(MediaType::Video)))
+                        .width(Length::Fill)
+                        .style(theme::Button::custom(bare)),
+                )
                 .width(Length::Fill)
-                .style(theme::Button::custom(bare)),
+            } else {
+                container("")
+            },
             button(row![icons::movie(), "Movies"].align_items(iced::Alignment::Center))
                 .on_press(Message::DbQuery(db::SqlCommand::GetMovieList))
                 .width(Length::Fill)
@@ -395,6 +402,9 @@ pub(crate) fn left_menu<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
 }
 
 pub(crate) fn remote<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
+    if let crate::State::Disconnected = krustmote.state {
+        return container("").into();
+    }
     let red = Color::from_rgb8(255, 0, 0);
     container(
         column![

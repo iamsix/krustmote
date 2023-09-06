@@ -49,7 +49,7 @@ pub fn skip_previous() -> Text<'static> {icon('\u{e045}')}
 pub fn skip_next() -> Text<'static> {icon('\u{e044}')}
 
 pub fn subtitles() -> Text<'static> {icon('\u{e048}')}
-pub fn smart_display() -> Text<'static> {icon('\u{f06a}')}
+pub fn videocam() -> Text<'static> {icon('\u{e04b}')}
 pub fn hearing() -> Text<'static> {icon('\u{e023}')}
 
 fn icon(unicode: char) -> Text<'static> {
