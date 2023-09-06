@@ -161,9 +161,13 @@ pub(crate) fn playing_bar<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
                 row![
                     Space::new(Length::Fill, 5),
                     button(icons::skip_previous().size(32).height(48))
-                        .style(theme::Button::custom(bare)),
+                        .style(theme::Button::custom(bare))
+                        .on_press(Message::KodiReq(KodiCommand::InputExecuteAction(
+                            "skipprevious"
+                        ))),
                     button(icons::fast_rewind().size(32).height(48))
-                        .style(theme::Button::custom(bare)),
+                        .style(theme::Button::custom(bare))
+                        .on_press(Message::KodiReq(KodiCommand::InputExecuteAction("rewind"))),
                     button(if krustmote.kodi_status.player_props.speed != 0.0 {
                         icons::pause_clircle_filled().size(48)
                     } else {
@@ -174,9 +178,15 @@ pub(crate) fn playing_bar<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
                     )))
                     .style(theme::Button::custom(bare)),
                     button(icons::fast_forward().size(32).height(48))
-                        .style(theme::Button::custom(bare)),
+                        .style(theme::Button::custom(bare))
+                        .on_press(Message::KodiReq(KodiCommand::InputExecuteAction(
+                            "fastforward"
+                        ))),
                     button(icons::skip_next().size(32).height(48))
-                        .style(theme::Button::custom(bare)),
+                        .style(theme::Button::custom(bare))
+                        .on_press(Message::KodiReq(KodiCommand::InputExecuteAction(
+                            "skipnext"
+                        ))),
                     button(icons::stop().size(32).height(48))
                         .on_press(Message::KodiReq(KodiCommand::InputExecuteAction("stop")))
                         .style(theme::Button::custom(bare)),
