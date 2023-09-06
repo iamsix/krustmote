@@ -34,6 +34,8 @@ use modal::Modal;
 
 use koditypes::*;
 
+static SEM: Semaphore = Semaphore::const_new(10);
+
 fn main() -> iced::Result {
     // TODO: Move this somewhere else.
     let img = imagelib::load_from_memory_with_format(
@@ -648,7 +650,7 @@ impl Krustmote {
     }
 
     fn update_virtual_list(&mut self) {
-        let sem = Arc::new(Semaphore::new(10));
+        let sem = Arc::new(&SEM);
         let http_url = if let Some(server) = &self.kodi_status.server {
             server.http_url()
         } else {
@@ -687,10 +689,10 @@ impl Krustmote {
     }
 }
 
-fn get_art(sem: &Arc<Semaphore>, pic: Pic) -> Arc<OnceLock<image::Handle>> {
+fn get_art(sem: &Arc<&'static Semaphore>, pic: Pic) -> Arc<OnceLock<image::Handle>> {
     if !pic.url.is_empty() {
         // This semaphore limits it to 10 hits on the server at a time.
-        let permit = Arc::clone(sem).acquire_owned();
+        let permit = Arc::clone(sem).acquire(); // .acquire_owned();
         let lock = Arc::new(OnceLock::new());
         let c_lock = Arc::clone(&lock);
         tokio::spawn(async move {
