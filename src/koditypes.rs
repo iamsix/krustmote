@@ -2,6 +2,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::sync::{Arc, OnceLock};
 
+// TODO: Investigate Cow for these Strings
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum KodiCommand {
     GetSources(MediaType), // TODO: SortType
@@ -17,6 +19,7 @@ pub enum KodiCommand {
     InputExecuteAction(&'static str),
     ToggleMute,
     GUIActivateWindow(&'static str),
+    // change to {} to sync with others that take player_id?
     PlayerSeek(u8, KodiTime),
     PlayerSetSubtitle {
         player_id: u8,
@@ -518,8 +521,8 @@ pub struct PlayingItem {
     // studio: Struct // TODO!
     // tagline: String,
     // writer: Struct // TODO!
-    // year: u16,
-    // These might not need to be Options - it seems to always return some default
+    // usually these items have a default, but some video streams just leave them out entirely
+    pub year: Option<u16>,
     pub showtitle: Option<String>,
     pub episode: Option<i16>,
     pub season: Option<i16>,
@@ -528,6 +531,25 @@ pub struct PlayingItem {
     #[serde(rename = "type")]
     pub type_: VideoType,
     // there's also ignored field 'userrating' but I think it's useless.
+}
+
+impl PlayingItem {
+    // this might change once the full PlayingItem is stored in main
+    pub fn make_title(self) -> String {
+        if self.type_ == VideoType::Episode {
+            format!(
+                "{} - S{:02}E{:02} - {}",
+                self.showtitle.unwrap_or("".to_string()),
+                self.season.unwrap_or(0),
+                self.episode.unwrap_or(0),
+                self.title,
+            )
+        } else if self.type_ == VideoType::Movie {
+            format!("{} ({})", self.title, self.year.unwrap_or(0),)
+        } else {
+            self.label
+        }
+    }
 }
 
 // pub const DETAILED_MOVIE_PROPS: [&'static str; 25] = [
@@ -563,6 +585,7 @@ pub struct PlayingItem {
 //     "uniqueid",
 // ];
 
+// should add originaltitle for searching, and resume?
 pub const MINIMAL_MOVIE_PROPS: [&'static str; 9] = [
     "title",
     "year",
@@ -632,6 +655,7 @@ impl IntoListData for MovieListItem {
     }
 
     fn label_contains(&self, find: &String) -> bool {
+        // Can also search originaltitle etc with this.
         self.title.to_lowercase().contains(&find.to_lowercase())
     }
 }

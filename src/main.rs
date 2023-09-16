@@ -556,6 +556,7 @@ impl Krustmote {
             }
 
             client::Event::Disconnected => {
+                self.kodi_status.active_player_id = None;
                 self.state = State::Disconnected;
             }
 
@@ -624,17 +625,7 @@ impl Krustmote {
             }
 
             client::Event::UpdatePlayingItem(item) => {
-                if item.type_ == VideoType::Episode {
-                    self.kodi_status.playing_title = format!(
-                        "{} - S{:02}E{:02} - {}",
-                        item.showtitle.unwrap_or("".to_string()),
-                        item.season.unwrap_or(0),
-                        item.episode.unwrap_or(0),
-                        item.title,
-                    )
-                } else {
-                    self.kodi_status.playing_title = item.label;
-                }
+                self.kodi_status.playing_title = item.make_title();
             }
 
             client::Event::InputRequested(input) => {
@@ -684,7 +675,7 @@ impl Krustmote {
                 self.item_list.virtual_list.insert(i, item);
             } else {
                 if self.item_list.virtual_list.contains_key(&i) {
-                    self.item_list.virtual_list.shift_remove(&i);
+                    self.item_list.virtual_list.remove(&i);
                 }
             }
         }
