@@ -374,13 +374,28 @@ impl Application for Krustmote {
                         } else {
                             // We currently only care about 1 server until we
                             // have the settings table to get the selected server
-                            self.kodi_status.server = Some(Arc::new(servers[0].clone()));
+                            let srv = Arc::new(servers[0].clone());
+                            self.kodi_status.server = Some(Arc::clone(&srv));
                             self.content_area = ContentArea::Files;
+                            if !matches!(self.state, State::Disconnected) {
+                                self.kodi_status.active_player_id = None;
+                                let cmd =
+                                    Message::KodiReq(KodiCommand::ChangeServer(Arc::clone(&srv)));
+                                return Command::perform(async {}, |_| cmd);
+                            }
                         }
                     }
 
                     db::Event::UpdateMovieList(movies) => {
-                        // TODO: If db empty > Do Kodi query for movies
+                        let mut commands = vec![scrollable::snap_to(
+                            Id::new("files"),
+                            scrollable::RelativeOffset { x: 0.0, y: 0.0 },
+                        )];
+                        if movies.is_empty() {
+                            let cmd = Message::KodiReq(KodiCommand::VideoLibraryGetMovies);
+                            commands.push(Command::perform(async {}, |_| cmd));
+                        }
+
                         self.item_list.list_title = "Movies".to_string();
                         self.item_list.breadcrumb.clear();
                         self.item_list.raw_data =
@@ -393,10 +408,7 @@ impl Application for Krustmote {
                         self.update_virtual_list();
 
                         self.content_area = ContentArea::Files;
-                        return scrollable::snap_to(
-                            Id::new("files"),
-                            scrollable::RelativeOffset { x: 0.0, y: 0.0 },
-                        );
+                        return Command::batch(commands);
                     }
 
                     db::Event::None => {}
@@ -583,8 +595,6 @@ impl Krustmote {
                 self.item_list.filter = "".to_string();
                 self.item_list.start_offset = 0;
 
-                // Sources is presumed to be small so we give the whole list as virtual
-                // TODO change this since it could be more than visible_count
                 self.item_list.virtual_list = IndexMap::new();
                 self.update_virtual_list();
 
@@ -691,6 +701,10 @@ fn get_art(sem: &Arc<&'static Semaphore>, pic: Pic) -> Arc<OnceLock<image::Handl
         let lock = Arc::new(OnceLock::new());
         let c_lock = Arc::clone(&lock);
         tokio::spawn(async move {
+            // hashing this WITH server url is actually not ideal
+            // as even shared databases will then each have their own cached images
+            // should hash the original art URL during get_art_data and make it a field in 'pic'
+            // technically even unshared db with same art url should have same pic and cache hit
             let hash = fxhash::hash(&pic.url);
             let path = format!("./imagecache/{:0x}.jpg", hash);
             let path = Path::new(&path);

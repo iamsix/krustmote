@@ -61,7 +61,7 @@ pub fn connect(server: Arc<KodiServer>) -> Subscription<Event> {
     )
 }
 
-async fn handle_connection(mut output: Sender<Event>, server: Arc<KodiServer>) -> ! {
+async fn handle_connection(mut output: Sender<Event>, mut server: Arc<KodiServer>) -> ! {
     let mut state = State::Disconnected;
 
     let mut poller = interval(Duration::from_secs(1));
@@ -146,6 +146,13 @@ async fn handle_connection(mut output: Sender<Event>, server: Arc<KodiServer>) -
 
                     message = input.select_next_some() => {
                         dbg!(&message);
+                        if let KodiCommand::ChangeServer(srv) = message {
+                            server = srv;
+                            state = State::Disconnected;
+                            let _ = output.send(Event::Disconnected);
+                            continue;
+                        };
+
                         let result = handle_kodi_command(
                             message,
                             client
@@ -218,6 +225,8 @@ async fn handle_kodi_command(
     client: &Client,
 ) -> Result<Event, Box<dyn Error + Send + Sync>> {
     match message {
+        KodiCommand::ChangeServer(_) => Ok(Event::Disconnected),
+
         KodiCommand::GetDirectory { path, media_type } => {
             let response: Map<String, Value> = client
                 .request(
@@ -416,6 +425,8 @@ async fn handle_kodi_command(
         // TODO: Decide if I want this to be able to directly send data to DB?
         // can do so by cloning the SqlQonnection
         KodiCommand::VideoLibraryGetMovies => {
+            // I tested tokio::spawn here but kodi itself delays other requests while this runs
+            // (even from other connections/clients/etc)
             let response: Value = client
                 .request(
                     "VideoLibrary.GetMovies",

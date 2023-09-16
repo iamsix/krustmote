@@ -6,6 +6,7 @@ use std::sync::{Arc, OnceLock};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum KodiCommand {
+    ChangeServer(Arc<KodiServer>),
     GetSources(MediaType), // TODO: SortType
     GetDirectory {
         path: String,
@@ -585,7 +586,7 @@ impl PlayingItem {
 //     "uniqueid",
 // ];
 
-// should add originaltitle for searching, and resume?
+// should add originaltitle for searching, and resume? runtime might also be nice for list display
 pub const MINIMAL_MOVIE_PROPS: [&'static str; 9] = [
     "title",
     "year",
@@ -743,7 +744,7 @@ pub struct ItemVideo {
     stereomode: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct KodiServer {
     pub id: u8,
     pub name: String,
