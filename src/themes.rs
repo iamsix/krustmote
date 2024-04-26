@@ -18,13 +18,13 @@ impl button::StyleSheet for ColoredButton {
             ColoredButton::ListItem => button::Appearance {
                 background: Some(Background::Color(DARK)),
                 text_color: Color::WHITE,
-                border_radius: 3.0.into(),
+                // border_radius: 3.0.into(),
                 ..Default::default()
             },
             ColoredButton::Bare => button::Appearance {
                 background: Some(Background::Color(Color::TRANSPARENT)),
                 text_color: Color::WHITE,
-                border_radius: 3.0.into(),
+                // border_radius: 3.0.into(),
                 ..Default::default()
             },
         }
@@ -40,7 +40,7 @@ impl button::StyleSheet for ColoredButton {
         button::Appearance {
             background: Some(Background::Color(DARK_HILIGHT)),
             text_color: Color::WHITE,
-            border_radius: 3.0.into(),
+            // border_radius: 3.0.into(),
             ..Default::default()
         }
     }
@@ -53,10 +53,10 @@ impl button::StyleSheet for ColoredButton {
                 a: 0.2,
                 ..active.text_color
             },
-            border_color: Color {
-                a: 0.2,
-                ..active.border_color
-            },
+            // border_color: Color {
+            //     a: 0.2,
+            //     ..active.border_color
+            // },
             ..active
         }
     }

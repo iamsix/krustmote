@@ -3,6 +3,7 @@ use jsonrpsee::core::client::{
 };
 use jsonrpsee::core::params::ObjectParams;
 // use jsonrpsee::core::Error;
+use jsonrpsee::core::ClientError;
 use jsonrpsee::rpc_params;
 use jsonrpsee::ws_client::WsClientBuilder;
 
@@ -495,7 +496,7 @@ async fn handle_kodi_command(
 async fn handle_notification(
     client: &Client,
     function: &str,
-    data: Result<Value, jsonrpsee::core::Error>,
+    data: Result<Value, ClientError>,
 ) -> Result<Event, Box<dyn Error + Sync + Send>> {
     match function {
         "Player.OnPlay" => {

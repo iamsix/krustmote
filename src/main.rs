@@ -6,7 +6,7 @@ use iced::widget::text_input;
 // use iced::time;
 use iced::widget::{column, container, image, row, scrollable};
 
-use iced::{subscription, window, Application, Command, Element, Event, Length, Settings};
+use iced::{event, subscription, window, Application, Command, Element, Event, Length, Settings};
 
 use ::image as imagelib;
 use fxhash;
@@ -37,6 +37,13 @@ use koditypes::*;
 static SEM: Semaphore = Semaphore::const_new(10);
 
 fn main() -> iced::Result {
+    // let dir = dirs_next::data_dir()
+    //     .expect("should have a data dir")
+    //     .join("krustmote");
+    // if !dir.exists() {
+    //     std::fs::create_dir(dir.as_path()).expect("expected permissions to create data folder");
+    // }
+
     // TODO: Move this somewhere else.
     let img = imagelib::load_from_memory_with_format(
         include_bytes!("../icon.png"),
@@ -460,8 +467,8 @@ impl Application for Krustmote {
 
     fn subscription(&self) -> iced::Subscription<Self::Message> {
         let mut subs = vec![
-            subscription::events_with(|event, _| match event {
-                Event::Window(window::Event::Resized { width: _, height }) => {
+            event::listen_with(|mevent, _| match mevent {
+                Event::Window(_, window::Event::Resized { width: _, height }) => {
                     Some(Message::WindowResized(height))
                 }
                 _ => None,

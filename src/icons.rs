@@ -7,7 +7,7 @@ use iced::alignment;
 
 
 const ICONS: Font = Font {
-    monospaced: true,
+    // monospaced: true,
     ..Font::with_name("Material Icons") 
 };
 

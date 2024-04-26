@@ -39,17 +39,14 @@ pub(crate) fn make_subtitle_modal<'a>(
         Rule::horizontal(5),
         row![
             pick_list(
-                &krustmote.kodi_status.player_props.subtitles,
+                &*krustmote.kodi_status.player_props.subtitles,
                 krustmote.kodi_status.player_props.currentsubtitle.clone(),
                 Message::SubtitlePicked
             )
             .placeholder("No Subtitles")
             .width(Length::Fill),
-            Checkbox::new(
-                "",
-                krustmote.kodi_status.player_props.subtitleenabled,
-                Message::SubtitleToggle
-            ),
+            Checkbox::new("", krustmote.kodi_status.player_props.subtitleenabled)
+                .on_toggle(Message::SubtitleToggle),
         ],
         row![
             button("-").on_press(Message::KodiReq(KodiCommand::InputExecuteAction(
@@ -79,7 +76,7 @@ pub(crate) fn make_audio_modal<'a>(
         ],
         Rule::horizontal(5),
         pick_list(
-            &krustmote.kodi_status.player_props.audiostreams,
+            &*krustmote.kodi_status.player_props.audiostreams,
             krustmote
                 .kodi_status
                 .player_props
@@ -346,7 +343,7 @@ pub(crate) fn make_listitem(data: &ListData) -> Button<Message> {
             text(" ")
         },
         column![
-            text(data.label.as_str()).size(14).height(18),
+            text(data.label.as_str()).size(14).height(19),
             text("").size(10),
             row![
                 match &data.bottom_left {
