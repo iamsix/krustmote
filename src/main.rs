@@ -45,27 +45,28 @@ fn main() -> iced::Result {
     // }
 
     // TODO: Move this somewhere else.
-    // let img = imagelib::load_from_memory_with_format(
-    //     include_bytes!("../icon.png"),
-    //     imagelib::ImageFormat::Png,
-    // );
+    let img = imagelib::load_from_memory_with_format(
+        include_bytes!("../icon.png"),
+        imagelib::ImageFormat::Png,
+    );
 
-    // let window = match img {
-    //     Ok(img) => {
-    //         let icon = img.as_rgba8().unwrap();
-    //         window::Settings {
-    //             icon: window::icon::from_rgba(icon.to_vec(), icon.width(), icon.height()).ok(),
-    //             ..Default::default()
-    //         }
-    //     }
-    //     Err(_) => window::Settings {
-    //         ..Default::default()
-    //     },
-    // };
+    let window = match img {
+        Ok(img) => {
+            let icon = img.as_rgba8().unwrap();
+            window::Settings {
+                icon: window::icon::from_rgba(icon.to_vec(), icon.width(), icon.height()).ok(),
+                ..Default::default()
+            }
+        }
+        Err(_) => window::Settings {
+            ..Default::default()
+        },
+    };
 
     let _ = BLANK_IMAGE.set(image::Handle::from_rgba(80, 120, vec![0; 38_400]));
     iced::application(Krustmote::title, Krustmote::update, Krustmote::view)
         .subscription(Krustmote::subscription)
+        .window(window)
         .run_with(Krustmote::new)
 
     // Krustmote::run(Settings {
@@ -163,6 +164,7 @@ enum Message {
     SendTextInput(String),
 }
 
+#[derive(Debug)]
 enum State {
     Disconnected,
     Connected(client::Connection),
@@ -204,7 +206,7 @@ impl Krustmote {
             Self {
                 state: State::Disconnected,
                 db_state: DbState::Closed,
-                menu_width: 150,
+                menu_width: 120,
                 kodi_status,
                 item_list,
                 slider_grabbed: false,
@@ -251,7 +253,7 @@ impl Krustmote {
 
             Message::ToggleLeftMenu => {
                 // TODO : Fancy animation by subtracting until 0 etc. maybe.
-                self.menu_width = if self.menu_width == 0 { 150 } else { 0 };
+                self.menu_width = if self.menu_width == 0 { 120 } else { 0 };
             }
 
             Message::HideModalAndKodiReq(cmd) => {
@@ -388,12 +390,13 @@ impl Krustmote {
                             let srv = Arc::new(servers[0].clone());
                             self.kodi_status.server = Some(Arc::clone(&srv));
                             self.content_area = ContentArea::Files;
-                            if !matches!(self.state, State::Disconnected) {
-                                self.kodi_status.active_player_id = None;
-                                let cmd =
-                                    Message::KodiReq(KodiCommand::ChangeServer(Arc::clone(&srv)));
-                                return Command::perform(async {}, move |_| cmd.clone());
-                            }
+                            dbg!(&self.state);
+                            // if matches!(self.state, State::Disconnected) {
+                            //     dbg!("Here?");
+                            self.kodi_status.active_player_id = None;
+                            let cmd = Message::KodiReq(KodiCommand::ChangeServer(Arc::clone(&srv)));
+                            return Command::perform(async {}, move |_| cmd.clone());
+                            // }
                         }
                     }
 
@@ -586,6 +589,12 @@ impl Krustmote {
             client::Event::Disconnected => {
                 self.kodi_status.active_player_id = None;
                 self.state = State::Disconnected;
+            }
+
+            client::Event::NoServer(mut connection) => {
+                if let Some(svr) = &self.kodi_status.server {
+                    connection.send(Arc::clone(&svr))
+                }
             }
 
             client::Event::UpdateDirList(dirlist, path) => {

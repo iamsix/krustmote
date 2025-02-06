@@ -20,7 +20,7 @@ use tokio::time::{interval, Duration};
 use tokio_stream::StreamMap;
 
 use std::error::Error;
-// use std::sync::Arc;
+use std::sync::Arc;
 
 use crate::koditypes::*;
 
@@ -44,12 +44,22 @@ macro_rules! rpc_obj_params {
 
 #[derive(Debug, Clone)]
 pub struct Connection(Sender<KodiCommand>);
+#[derive(Debug, Clone)]
+pub struct SvrConnection(Sender<Arc<KodiServer>>);
 
 impl Connection {
     pub fn send(&mut self, message: KodiCommand) {
         self.0
             .try_send(message)
             .expect("Should be able to send to kodi client");
+    }
+}
+
+impl SvrConnection {
+    pub fn send(&mut self, svr: Arc<KodiServer>) {
+        self.0
+            .try_send(svr)
+            .expect("Should be able to send a server for the client to connect to");
     }
 }
 
@@ -60,40 +70,48 @@ pub fn connect() -> impl Stream<Item = Event> {
 }
 
 async fn handle_connection(mut output: Sender<Event>) -> ! {
-    let mut state = State::Disconnected;
-    // let mut server: Arc<KodiServer>;
+    let (svrsender, svrreciever) = channel(5);
+    let _ = output.send(Event::NoServer(SvrConnection(svrsender))).await;
+    let mut state = State::NoServer(svrreciever);
+    let mut server: Option<Arc<KodiServer>> = None;
     let mut poller = interval(Duration::from_secs(1));
     let mut notifications: StreamMap<&str, WsSubscription<Value>> = StreamMap::new();
 
     loop {
         match &mut state {
-            // State::Initial => {}
             State::Disconnected => {
-                match WsClientBuilder::default()
-                    // .build(server.websocket_url())
-                    .build("ws://192.168.1.22:9090")
-                    .await
-                {
-                    Ok(client) => {
-                        let (sender, reciever) = channel(100);
-                        let _ = output.send(Event::Connected(Connection(sender))).await;
+                if let Some(server) = &server {
+                    match WsClientBuilder::default()
+                        .build(server.websocket_url())
+                        // .build("ws://192.168.1.22:9090")
+                        .await
+                    {
+                        Ok(client) => {
+                            let (sender, reciever) = channel(100);
+                            let _ = output.send(Event::Connected(Connection(sender))).await;
+                            // TODO: More notifications?
+                            ws_subscribe(
+                                vec!["Player.OnPlay", "Player.OnStop", "Input.OnInputRequested"],
+                                &client,
+                                &mut notifications,
+                            )
+                            .await;
 
-                        // TODO: More notifications?
-                        ws_subscribe(
-                            vec!["Player.OnPlay", "Player.OnStop", "Input.OnInputRequested"],
-                            &client,
-                            &mut notifications,
-                        )
-                        .await;
-
-                        state = State::Connected(client, reciever);
-                    }
-                    Err(err) => {
-                        dbg!(err);
-                        let _ = output.send(Event::Disconnected).await;
-                        tokio::time::sleep(Duration::from_secs(5)).await;
+                            state = State::Connected(client, reciever);
+                        }
+                        Err(err) => {
+                            dbg!(err);
+                            let _ = output.send(Event::Disconnected).await;
+                            tokio::time::sleep(Duration::from_secs(5)).await;
+                        }
                     }
                 }
+            }
+
+            State::NoServer(input) => {
+                let svr = input.select_next_some().await;
+                server = Some(svr);
+                state = State::Disconnected;
             }
 
             State::Connected(client, input) => {
@@ -147,8 +165,8 @@ async fn handle_connection(mut output: Sender<Event>) -> ! {
                     message = input.select_next_some() => {
                         dbg!(&message);
 
-                        if let KodiCommand::ChangeServer(_srv) = message {
-                            // server = srv;
+                        if let KodiCommand::ChangeServer(srv) = message {
+                            server = Some(srv);
                             state = State::Disconnected;
                             let _ = output.send(Event::Disconnected);
                             continue;
@@ -531,8 +549,9 @@ async fn handle_notification(
 
 #[derive(Debug)]
 enum State {
-    // Initial,
+    // NoServer(Arc<KodiServer>),
     Disconnected,
+    NoServer(Receiver<Arc<KodiServer>>),
     Connected(Client, Receiver<KodiCommand>),
 }
 
@@ -540,6 +559,7 @@ enum State {
 pub enum Event {
     Connected(Connection),
     Disconnected,
+    NoServer(SvrConnection),
     None,
     UpdateSources(Vec<Sources>),
     UpdateDirList(Vec<DirList>, String),
