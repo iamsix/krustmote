@@ -711,7 +711,7 @@ impl Krustmote {
                 self.item_list.virtual_list.insert(i, item);
             } else {
                 if self.item_list.virtual_list.contains_key(&i) {
-                    self.item_list.virtual_list.remove(&i);
+                    self.item_list.virtual_list.shift_remove(&i);
                 }
             }
         }

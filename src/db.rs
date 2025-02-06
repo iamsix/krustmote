@@ -100,7 +100,7 @@ async fn handle_command(
                             server.db_id
                         ],
                     )?;
-                    Ok::<_, rusqlite::Error>(())
+                    Ok::<_, tokio_rusqlite::Error>(())
                 })
                 .await;
 
@@ -151,7 +151,7 @@ async fn get_movie_list(conn: &Connection) -> Result<Event, tokio_rusqlite::Erro
                     })
                 })?
                 .collect::<Result<Vec<MovieListItem>, rusqlite::Error>>();
-            Ok::<_, rusqlite::Error>(movies)
+            Ok::<_, tokio_rusqlite::Error>(movies)
         })
         .await??;
     Ok(Event::UpdateMovieList(movies))
@@ -176,7 +176,7 @@ async fn get_server_list(conn: &Connection) -> Result<Event, tokio_rusqlite::Err
                     })
                 })?
                 .collect::<Result<Vec<KodiServer>, rusqlite::Error>>();
-            Ok::<_, rusqlite::Error>(servers)
+            Ok::<_, tokio_rusqlite::Error>(servers)
         })
         .await??;
     Ok(Event::UpdateServers(servers))
@@ -211,7 +211,7 @@ async fn insert_movies(
         }
 
         t.commit()?;
-        Ok::<_, rusqlite::Error>}(())
+        Ok::<_, tokio_rusqlite::Error>}(())
     ).await;
 
     dbg!(movies.err());
@@ -232,7 +232,7 @@ async fn create_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
         )",
         [],
     )?;
-    Ok::<_, rusqlite::Error>}(())
+    Ok::<_, tokio_rusqlite::Error>}(())
     ).await;
 
     dbg!(servers.err());
@@ -267,7 +267,7 @@ async fn create_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
         )",
         [],
     )?;
-    Ok::<_, rusqlite::Error>}(())
+    Ok::<_, tokio_rusqlite::Error>}(())
     ).await;
 
     dbg!(movielist.err());
