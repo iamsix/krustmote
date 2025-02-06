@@ -3,12 +3,13 @@ use iced::Element;
 use iced::Length;
 
 use iced::font::{Family, Font, Weight};
-use iced::theme;
+// use iced::theme;
 use iced::widget::scrollable::Id;
 use iced::widget::{
     button, column, container, image, pick_list, row, scrollable, text, text_input, Button,
     Checkbox, Rule, Slider, Space,
 };
+// use iced::Theme;
 
 use super::Krustmote;
 use super::BLANK_IMAGE;
@@ -18,7 +19,7 @@ use super::{ListData, Message, Modals, State};
 use crate::db;
 use crate::icons;
 use crate::koditypes::*;
-use crate::themes;
+// use crate::themes;
 // use crate::themes;
 
 use chrono;
@@ -57,12 +58,12 @@ pub(crate) fn make_subtitle_modal<'a>(
                 "subtitledelayplus"
             )))
         ]
-        .align_items(iced::Alignment::Center),
+        .align_y(iced::Alignment::Center),
         // Subtitle adjust buttons.
     ])
     .width(500)
     .padding(10)
-    .style(theme::Container::Box)
+    //.style(Theme::Dark)
 }
 
 pub(crate) fn make_audio_modal<'a>(
@@ -95,11 +96,11 @@ pub(crate) fn make_audio_modal<'a>(
                 "audiodelayplus"
             )))
         ]
-        .align_items(iced::Alignment::Center),
+        .align_y(iced::Alignment::Center),
     ])
     .width(500)
     .padding(10)
-    .style(theme::Container::Box)
+    // .style(theme::Container::Box)
 }
 
 pub(crate) fn request_text_modal<'a>(
@@ -120,11 +121,12 @@ pub(crate) fn request_text_modal<'a>(
     ])
     .width(500)
     .padding(10)
-    .style(theme::Container::Box)
+    //.style(theme::Container::Box)
 }
 
-pub(crate) fn playing_bar<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
-    let bare = themes::ColoredButton::Bare;
+pub(crate) fn playing_bar<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> {
+    // let bare = themes::ColoredButton::Bare;
+    // let bare = |theme: &Theme, status| button::Style::default().with_background(Color::TRANSPARENT);
 
     let duration = krustmote.kodi_status.player_props.totaltime.total_seconds();
     let play_time = krustmote.kodi_status.player_props.time.total_seconds();
@@ -158,64 +160,61 @@ pub(crate) fn playing_bar<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
                 row![
                     Space::new(Length::Fill, 5),
                     button(icons::skip_previous().size(32).height(48))
-                        .style(theme::Button::custom(bare))
+                        // .style(bare)
                         .on_press(Message::KodiReq(KodiCommand::InputExecuteAction(
                             "skipprevious"
                         ))),
                     button(icons::fast_rewind().size(32).height(48))
-                        .style(theme::Button::custom(bare))
+                        //.style(theme::Button::custom(bare))
                         .on_press(Message::KodiReq(KodiCommand::InputExecuteAction("rewind"))),
                     button(if krustmote.kodi_status.player_props.speed != 0.0 {
                         icons::pause_clircle_filled().size(48)
                     } else {
                         icons::play_circle_filled().size(48)
                     })
-                    .on_press(Message::KodiReq(KodiCommand::InputExecuteAction(
-                        "playpause"
-                    )))
-                    .style(theme::Button::custom(bare)),
+                    .on_press(Message::KodiReq(
+                        KodiCommand::InputExecuteAction("playpause")
+                    )),
+                    // .style(theme::Button::custom(bare)),
                     button(icons::fast_forward().size(32).height(48))
-                        .style(theme::Button::custom(bare))
+                        // .style(theme::Button::custom(bare))
                         .on_press(Message::KodiReq(KodiCommand::InputExecuteAction(
                             "fastforward"
                         ))),
                     button(icons::skip_next().size(32).height(48))
-                        .style(theme::Button::custom(bare))
+                        // .style(theme::Button::custom(bare))
                         .on_press(Message::KodiReq(KodiCommand::InputExecuteAction(
                             "skipnext"
                         ))),
                     button(icons::stop().size(32).height(48))
-                        .on_press(Message::KodiReq(KodiCommand::InputExecuteAction("stop")))
-                        .style(theme::Button::custom(bare)),
+                        .on_press(Message::KodiReq(KodiCommand::InputExecuteAction("stop"))),
+                    // .style(theme::Button::custom(bare)),
                     Space::new(20, 5),
                     column![
-                        button(icons::subtitles())
-                            .on_press(Message::ShowModal(Modals::Subtitles))
-                            .style(theme::Button::custom(bare)),
-                        button(icons::hearing())
-                            .on_press(Message::ShowModal(Modals::Audio))
-                            .style(theme::Button::custom(bare)),
-                        button(icons::videocam()).style(theme::Button::custom(bare)),
+                        button(icons::subtitles()).on_press(Message::ShowModal(Modals::Subtitles)),
+                        // .style(theme::Button::custom(bare)),
+                        button(icons::hearing()).on_press(Message::ShowModal(Modals::Audio)),
+                        // .style(theme::Button::custom(bare)),
+                        button(icons::videocam()), //.style(theme::Button::custom(bare)),
                     ],
                     Space::new(10, 5),
                 ]
                 .width(Length::FillPortion(40))
-                .align_items(iced::Alignment::Center)
+                .align_y(iced::Alignment::Center)
             ]
             .spacing(20),
         )
         .height(80)
         .into()
     } else {
-        container(Space::new(0, 0)).into()
+        container(Space::new(Length::Fill, 48)).into()
     }
 }
 
 pub(crate) fn top_bar<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
     container(row![
-        button(icons::menu())
-            .on_press(Message::ToggleLeftMenu)
-            .style(theme::Button::custom(themes::ColoredButton::Bare)),
+        button(icons::menu()).on_press(Message::ToggleLeftMenu),
+        // .style(theme::Button::custom(themes::ColoredButton::Bare)),
         Space::new(Length::Fill, Length::Shrink),
         text_input("Filter..", &krustmote.item_list.filter)
             .on_input(Message::FilterFileList)
@@ -281,12 +280,12 @@ pub(crate) fn file_list<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> {
             .on_press(Message::UpBreadCrumb)
             .width(Length::Fill)
             .height(50)
-            .style(iced::theme::Button::custom(themes::ColoredButton::ListItem))
+            // .style(iced::theme::Button::custom(themes::ColoredButton::ListItem))
         } else {
             button(text(&krustmote.item_list.list_title))
                 .width(Length::Fill)
                 .height(50)
-                .style(iced::theme::Button::custom(themes::ColoredButton::ListItem))
+            // .style(iced::theme::Button::custom(themes::ColoredButton::ListItem))
         },]
         .spacing(1)
         .padding(iced::Padding {
@@ -361,11 +360,11 @@ pub(crate) fn make_listitem(data: &ListData) -> Button<Message> {
     .on_press(data.on_click.clone())
     .width(Length::Fill)
     .height(ITEM_HEIGHT as f32)
-    .style(theme::Button::custom(themes::ColoredButton::ListItem))
+    // .style(theme::Button::custom(themes::ColoredButton::ListItem))
 }
 
-pub(crate) fn left_menu<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
-    let bare = themes::ColoredButton::Bare;
+pub(crate) fn left_menu<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> {
+    // let bare = themes::ColoredButton::Bare;
     container(
         column![
             row![
@@ -378,26 +377,26 @@ pub(crate) fn left_menu<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
                     None => text("Disconnected").size(14),
                 }
             ]
-            .align_items(iced::Alignment::Center),
+            .align_y(iced::Alignment::Center),
             Rule::horizontal(20),
             if let crate::State::Connected(..) = krustmote.state {
                 container(
-                    button(row![icons::folder(), "Files"].align_items(iced::Alignment::Center))
+                    button(row![icons::folder(), "Files"].align_y(iced::Alignment::Center))
                         .on_press(Message::KodiReq(KodiCommand::GetSources(MediaType::Video)))
-                        .width(Length::Fill)
-                        .style(theme::Button::custom(bare)),
+                        .width(Length::Fill),
+                    // .style(theme::Button::custom(bare)),
                 )
                 .width(Length::Fill)
             } else {
                 container("")
             },
-            button(row![icons::movie(), "Movies"].align_items(iced::Alignment::Center))
+            button(row![icons::movie(), "Movies"].align_y(iced::Alignment::Center))
                 .on_press(Message::DbQuery(db::SqlCommand::GetMovieList))
+                .width(Length::Fill),
+            // .style(theme::Button::custom(bare)),
+            button(row![icons::settings(), "Settings"].align_y(iced::Alignment::Center))
                 .width(Length::Fill)
-                .style(theme::Button::custom(bare)),
-            button(row![icons::settings(), "Settings"].align_items(iced::Alignment::Center))
-                .width(Length::Fill)
-                .style(theme::Button::custom(bare))
+                // .style(theme::Button::custom(bare))
                 .on_press(Message::ShowSettings),
         ]
         .spacing(1)
@@ -428,7 +427,7 @@ pub(crate) fn remote<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
                     KodiCommand::InputExecuteAction("volumedown")
                 )),
                 if krustmote.kodi_status.muted {
-                    button(icons::volume_off().style(red).size(32))
+                    button(icons::volume_off().color(red).size(32))
                         .on_press(Message::KodiReq(KodiCommand::ToggleMute))
                 } else {
                     button(icons::volume_off().size(32))
@@ -531,7 +530,7 @@ pub(crate) fn remote<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
         ]
         .padding(10)
         .spacing(5)
-        .align_items(iced::Alignment::Center),
+        .align_x(iced::Alignment::Center),
     )
     .width(230)
     .into()

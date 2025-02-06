@@ -1,6 +1,6 @@
 use iced::futures::channel::mpsc::{channel, Receiver, Sender};
-use iced::futures::{SinkExt, StreamExt};
-use iced::subscription::{self, Subscription};
+use iced::futures::{SinkExt, Stream, StreamExt};
+use iced::stream;
 
 use rusqlite::params;
 use tokio_rusqlite::Connection;
@@ -30,12 +30,10 @@ impl SqlConnection {
     }
 }
 
-pub fn connect() -> Subscription<Event> {
-    struct Conn;
+pub fn connect() -> impl Stream<Item = Event> {
+    // struct Conn;
 
-    subscription::channel(std::any::TypeId::of::<Conn>(), 100, |output| async move {
-        handle_connection(output).await
-    })
+    stream::channel(100, |output| async move { handle_connection(output).await })
 }
 
 async fn handle_connection(mut output: Sender<Event>) -> ! {

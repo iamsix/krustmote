@@ -1,7 +1,8 @@
 use iced::widget::{button, column, row, text, text_input, Space};
+use iced::Color;
 use iced::Element;
 use iced::Length;
-use iced::{Color, Command};
+use iced::Task as Command;
 use std::net::IpAddr;
 use std::sync::Arc;
 
@@ -112,7 +113,7 @@ impl Settings {
                     self.edit_server_username.clone(),
                     self.edit_server_password.clone(),
                 );
-                return Command::perform(async {}, |_| Event::AddServer(server));
+                return Command::perform(async {}, move |_| Event::AddServer(server.clone()));
             }
             Message::Cancel => {
                 return Command::perform(async {}, |_| Event::Cancel);
@@ -127,25 +128,25 @@ impl Settings {
             if self.name_is_valid {
                 text("Server Name:")
             } else {
-                text("Server Name:").style(red)
+                text("Server Name:").color(red)
             },
             text_input("Livingroom", &self.edit_server_name).on_input(Message::ServerNameChanged),
             if self.ip_is_valid {
                 text("Server IP:")
             } else {
-                text("Server IP:").style(red)
+                text("Server IP:").color(red)
             },
             text_input("127.0.0.1", &self.edit_server_ip).on_input(Message::ServerIPChanged),
             if self.ws_port_is_valid {
                 text("Server Websocket port:")
             } else {
-                text("Server Websocket port:").style(red)
+                text("Server Websocket port:").color(red)
             },
             text_input("9090", &self.edit_server_ws_port).on_input(Message::ServerWsPortChanged),
             if self.http_port_is_valid {
                 text("Server Web/HTTP port:")
             } else {
-                text("Server Web/HTTP port:").style(red)
+                text("Server Web/HTTP port:").color(red)
             },
             text_input("8080", &self.edit_server_http_port)
                 .on_input(Message::ServerHttpPortChanged),

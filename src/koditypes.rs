@@ -335,7 +335,7 @@ pub struct DirList {
     pub rating: Option<f64>,
     pub season: Option<i16>,
     pub episode: Option<i16>,
-    pub playcount: Option<u16>,
+    pub playcount: Option<i16>,
     pub year: Option<u16>,
     #[serde(rename = "type")]
     pub type_: VideoType,
@@ -609,7 +609,7 @@ pub struct MovieListItem {
     pub genre: Vec<String>,
     pub rating: f64,
     pub premiered: String,
-    pub playcount: u16,
+    pub playcount: i16,
     pub art: Art,
 }
 

@@ -11,15 +11,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use iced::futures::channel::mpsc::{channel, Receiver, Sender};
-use iced::futures::{SinkExt, StreamExt};
-use iced::subscription::{self, Subscription};
+use iced::futures::{SinkExt, Stream, StreamExt};
+use iced::stream;
+// use iced::subscription::{self, Subscription};
 
 use tokio::select;
 use tokio::time::{interval, Duration};
 use tokio_stream::StreamMap;
 
 use std::error::Error;
-use std::sync::Arc;
+// use std::sync::Arc;
 
 use crate::koditypes::*;
 
@@ -52,27 +53,25 @@ impl Connection {
     }
 }
 
-pub fn connect(server: Arc<KodiServer>) -> Subscription<Event> {
-    struct Connect;
+pub fn connect() -> impl Stream<Item = Event> {
+    // struct Connect;
 
-    subscription::channel(
-        std::any::TypeId::of::<Connect>(),
-        100,
-        |output| async move { handle_connection(output, server).await },
-    )
+    stream::channel(100, |output| async move { handle_connection(output).await })
 }
 
-async fn handle_connection(mut output: Sender<Event>, mut server: Arc<KodiServer>) -> ! {
+async fn handle_connection(mut output: Sender<Event>) -> ! {
     let mut state = State::Disconnected;
-
+    // let mut server: Arc<KodiServer>;
     let mut poller = interval(Duration::from_secs(1));
     let mut notifications: StreamMap<&str, WsSubscription<Value>> = StreamMap::new();
 
     loop {
         match &mut state {
+            // State::Initial => {}
             State::Disconnected => {
                 match WsClientBuilder::default()
-                    .build(server.websocket_url())
+                    // .build(server.websocket_url())
+                    .build("ws://192.168.1.22:9090")
                     .await
                 {
                     Ok(client) => {
@@ -147,8 +146,9 @@ async fn handle_connection(mut output: Sender<Event>, mut server: Arc<KodiServer
 
                     message = input.select_next_some() => {
                         dbg!(&message);
-                        if let KodiCommand::ChangeServer(srv) = message {
-                            server = srv;
+
+                        if let KodiCommand::ChangeServer(_srv) = message {
+                            // server = srv;
                             state = State::Disconnected;
                             let _ = output.send(Event::Disconnected);
                             continue;
@@ -531,6 +531,7 @@ async fn handle_notification(
 
 #[derive(Debug)]
 enum State {
+    // Initial,
     Disconnected,
     Connected(Client, Receiver<KodiCommand>),
 }
