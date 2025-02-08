@@ -55,7 +55,8 @@ pub fn hearing() -> Text<'static> {icon('\u{e023}')}
 fn icon(unicode: char) -> Text<'static> {
     text(unicode.to_string())
         .font(ICONS)
-        .horizontal_alignment(alignment::Horizontal::Center)
-        .vertical_alignment(alignment::Vertical::Center)
+        .align_x(alignment::Horizontal::Center)
+        .align_y(alignment::Vertical::Center)
         .line_height(1.0)
+
 }

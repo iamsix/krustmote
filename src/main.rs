@@ -1,12 +1,12 @@
-use iced::executor;
+// use iced::executor;
 use iced::font;
-use iced::theme::Theme;
+// use iced::theme::Theme;
 use iced::widget::scrollable::Id;
 use iced::widget::text_input;
 // use iced::time;
 use iced::widget::{column, container, image, row, scrollable};
 
-use iced::{event, subscription, window, Application, Command, Element, Event, Length, Settings};
+use iced::{event, window, Element, Event, Length, Subscription, Task as Command};
 
 use ::image as imagelib;
 use fxhash;
@@ -27,7 +27,7 @@ mod icons;
 mod koditypes;
 mod modal;
 mod settingsui;
-mod themes;
+// mod themes;
 mod uiparts;
 
 use modal::Modal;
@@ -63,11 +63,16 @@ fn main() -> iced::Result {
         },
     };
 
-    let _ = BLANK_IMAGE.set(image::Handle::from_pixels(80, 120, [0; 38_400]));
-    Krustmote::run(Settings {
-        window,
-        ..Settings::default()
-    })
+    let _ = BLANK_IMAGE.set(image::Handle::from_rgba(80, 120, vec![0; 38_400]));
+    iced::application(Krustmote::title, Krustmote::update, Krustmote::view)
+        .subscription(Krustmote::subscription)
+        .window(window)
+        .run_with(Krustmote::new)
+
+    // Krustmote::run(Settings {
+    //     // window,
+    //     ..Settings::default()
+    // })
 }
 
 struct Krustmote {
@@ -127,7 +132,7 @@ struct KodiStatus {
 pub struct ListData {
     label: String,
     on_click: Message,
-    play_count: Option<u16>,
+    play_count: Option<i16>,
     // content_area: Option<String>, // container/element instead?
     bottom_left: Option<String>,  // container/element?
     bottom_right: Option<String>, // container/element?
@@ -159,6 +164,7 @@ enum Message {
     SendTextInput(String),
 }
 
+#[derive(Debug)]
 enum State {
     Disconnected,
     Connected(client::Connection),
@@ -169,13 +175,13 @@ enum DbState {
     Open(db::SqlConnection),
 }
 
-impl Application for Krustmote {
-    type Message = Message;
-    type Theme = Theme;
-    type Executor = executor::Default;
-    type Flags = ();
+impl Krustmote {
+    // type Message = Message;
+    // type Theme = Theme;
+    // type Executor = executor::Default;
+    // type Flags = ();
 
-    fn new(_flags: ()) -> (Self, Command<Message>) {
+    fn new() -> (Self, Command<Message>) {
         let kodi_status = KodiStatus {
             server: None,
             active_player_id: None,
@@ -200,7 +206,7 @@ impl Application for Krustmote {
             Self {
                 state: State::Disconnected,
                 db_state: DbState::Closed,
-                menu_width: 150,
+                menu_width: 120,
                 kodi_status,
                 item_list,
                 slider_grabbed: false,
@@ -218,7 +224,7 @@ impl Application for Krustmote {
         format!("Krustmote - {}", self.kodi_status.playing_title)
     }
 
-    fn update(&mut self, message: Self::Message) -> Command<Self::Message> {
+    fn update(&mut self, message: Message) -> Command<Message> {
         match message {
             Message::Settings(settings_msg) => {
                 if let ContentArea::Settings(set) = &mut self.content_area {
@@ -229,7 +235,7 @@ impl Application for Krustmote {
             Message::SettingsEvent(event) => match event {
                 settingsui::Event::AddServer(srv) => {
                     let q = db::SqlCommand::AddOrEditServer(srv);
-                    return Command::perform(async {}, |_| Message::DbQuery(q));
+                    return Command::perform(async {}, move |_| Message::DbQuery(q.clone()));
                 }
                 settingsui::Event::Cancel => {
                     self.content_area = ContentArea::Files;
@@ -247,7 +253,7 @@ impl Application for Krustmote {
 
             Message::ToggleLeftMenu => {
                 // TODO : Fancy animation by subtracting until 0 etc. maybe.
-                self.menu_width = if self.menu_width == 0 { 150 } else { 0 };
+                self.menu_width = if self.menu_width == 0 { 120 } else { 0 };
             }
 
             Message::HideModalAndKodiReq(cmd) => {
@@ -257,7 +263,7 @@ impl Application for Krustmote {
                     self.send_text = "".to_string();
                 }
 
-                return Command::perform(async {}, |_| Message::KodiReq(cmd));
+                return Command::perform(async {}, move |_| Message::KodiReq(cmd.clone()));
             }
 
             Message::ShowModal(modal) => {
@@ -272,7 +278,7 @@ impl Application for Krustmote {
 
             Message::UpBreadCrumb => {
                 let cmd = self.up_breadcrumb();
-                return Command::perform(async {}, |_| Message::KodiReq(cmd));
+                return Command::perform(async {}, move |_| Message::KodiReq(cmd.clone()));
             }
 
             Message::Scrolled(view) => {
@@ -294,7 +300,7 @@ impl Application for Krustmote {
                     subtitle_index: sub.index,
                     enabled: self.kodi_status.player_props.subtitleenabled,
                 };
-                return Command::perform(async {}, |_| Message::KodiReq(cmd));
+                return Command::perform(async {}, move |_| Message::KodiReq(cmd.clone()));
             }
 
             Message::SubtitleToggle(val) => {
@@ -307,7 +313,7 @@ impl Application for Krustmote {
                         .expect("Should be playing if this is called"),
                     on_off,
                 };
-                return Command::perform(async {}, |_| Message::KodiReq(cmd));
+                return Command::perform(async {}, move |_| Message::KodiReq(cmd.clone()));
                 // send SubtitlePicked here with current_subtitle?
             }
 
@@ -319,7 +325,7 @@ impl Application for Krustmote {
                         .expect("Should be playing if this is called"),
                     audio_index: val.index,
                 };
-                return Command::perform(async {}, |_| Message::KodiReq(cmd));
+                return Command::perform(async {}, move |_| Message::KodiReq(cmd.clone()));
             }
 
             Message::SendTextInput(text) => {
@@ -357,7 +363,7 @@ impl Application for Krustmote {
                         .expect("should have a player_id if this is visible"),
                     self.kodi_status.player_props.time.clone(),
                 );
-                return Command::perform(async {}, |_| Message::KodiReq(cmd));
+                return Command::perform(async {}, move |_| Message::KodiReq(cmd.clone()));
             }
 
             Message::DbEvent(event) => {
@@ -384,12 +390,13 @@ impl Application for Krustmote {
                             let srv = Arc::new(servers[0].clone());
                             self.kodi_status.server = Some(Arc::clone(&srv));
                             self.content_area = ContentArea::Files;
-                            if !matches!(self.state, State::Disconnected) {
-                                self.kodi_status.active_player_id = None;
-                                let cmd =
-                                    Message::KodiReq(KodiCommand::ChangeServer(Arc::clone(&srv)));
-                                return Command::perform(async {}, |_| cmd);
-                            }
+                            dbg!(&self.state);
+                            // if matches!(self.state, State::Disconnected) {
+                            //     dbg!("Here?");
+                            self.kodi_status.active_player_id = None;
+                            let cmd = Message::KodiReq(KodiCommand::ChangeServer(Arc::clone(&srv)));
+                            return Command::perform(async {}, move |_| cmd.clone());
+                            // }
                         }
                     }
 
@@ -400,7 +407,7 @@ impl Application for Krustmote {
                         )];
                         if movies.is_empty() {
                             let cmd = Message::KodiReq(KodiCommand::VideoLibraryGetMovies);
-                            commands.push(Command::perform(async {}, |_| cmd));
+                            commands.push(Command::perform(async {}, move |_| cmd.clone()));
                         }
 
                         self.item_list.list_title = "Movies".to_string();
@@ -465,18 +472,26 @@ impl Application for Krustmote {
         Command::none()
     }
 
-    fn subscription(&self) -> iced::Subscription<Self::Message> {
+    fn subscription(&self) -> iced::Subscription<Message> {
         let mut subs = vec![
-            event::listen_with(|mevent, _| match mevent {
-                Event::Window(_, window::Event::Resized { width: _, height }) => {
-                    Some(Message::WindowResized(height))
+            event::listen_with(|mevent, _, _| match mevent {
+                Event::Window(window::Event::Resized(sz)) => {
+                    Some(Message::WindowResized(sz.height as u32))
                 }
                 _ => None,
             }),
-            db::connect().map(Message::DbEvent),
+            Subscription::run(db::connect).map(Message::DbEvent),
         ];
-        if let Some(kodi_server) = &self.kodi_status.server {
-            subs.push(client::connect(Arc::clone(kodi_server)).map(Message::ServerEvent));
+        if let Some(_kodi_server) = &self.kodi_status.server {
+            subs.push(
+                Subscription::run_with_id(42, client::connect(Arc::clone(_kodi_server)))
+                    .map(Message::ServerEvent),
+            );
+
+            // subs.push(
+            //     Subscription::run(client::connect(Arc::clone(kodi_server)))
+            //         .map(Message::ServerEvent),
+            // );
         };
 
         iced::Subscription::batch(subs)
@@ -523,9 +538,9 @@ impl Application for Krustmote {
         }
     }
 
-    fn theme(&self) -> Self::Theme {
-        Theme::Dark
-    }
+    // fn theme(&self) -> Self::Theme {
+    //     Theme::Dark
+    // }
 }
 
 impl Krustmote {
@@ -550,7 +565,7 @@ impl Krustmote {
         let w = img.width();
         let h = img.height();
         let img = img.into_rgba8().to_vec();
-        Ok(image::Handle::from_pixels(w, h, img))
+        Ok(image::Handle::from_rgba(w, h, img))
     }
 
     async fn download_pic(
@@ -565,7 +580,7 @@ impl Krustmote {
         img.save(cache_path)?;
         let img = img.into_rgba8().to_vec();
 
-        Ok(image::Handle::from_pixels(pic.w, pic.h, img))
+        Ok(image::Handle::from_rgba(pic.w, pic.h, img))
     }
 
     fn handle_server_event(&mut self, event: client::Event) -> Option<Command<Message>> {
@@ -651,8 +666,9 @@ impl Krustmote {
             }
 
             client::Event::UpdateMovieList(movies) => {
+                // panic!("Can't do this rn");
                 let cmd = Message::DbQuery(db::SqlCommand::InsertMovies(movies));
-                return Some(Command::perform(async {}, |_| cmd));
+                return Some(Command::perform(async {}, move |_| cmd.clone()));
             }
 
             client::Event::None => {}
@@ -692,7 +708,7 @@ impl Krustmote {
                 self.item_list.virtual_list.insert(i, item);
             } else {
                 if self.item_list.virtual_list.contains_key(&i) {
-                    self.item_list.virtual_list.remove(&i);
+                    self.item_list.virtual_list.shift_remove(&i);
                 }
             }
         }

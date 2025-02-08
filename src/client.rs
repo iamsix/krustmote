@@ -3,7 +3,7 @@ use jsonrpsee::core::client::{
 };
 use jsonrpsee::core::params::ObjectParams;
 // use jsonrpsee::core::Error;
-use jsonrpsee::core::ClientError;
+// use jsonrpsee::core::ClientError;
 use jsonrpsee::rpc_params;
 use jsonrpsee::ws_client::WsClientBuilder;
 
@@ -11,8 +11,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use iced::futures::channel::mpsc::{channel, Receiver, Sender};
-use iced::futures::{SinkExt, StreamExt};
-use iced::subscription::{self, Subscription};
+use iced::futures::{SinkExt, Stream, StreamExt};
+use iced::stream;
+// use iced::subscription::{self, Subscription};
 
 use tokio::select;
 use tokio::time::{interval, Duration};
@@ -52,19 +53,20 @@ impl Connection {
     }
 }
 
-pub fn connect(server: Arc<KodiServer>) -> Subscription<Event> {
-    struct Connect;
+pub fn connect(svr: Arc<KodiServer>) -> impl Stream<Item = Event> {
+    // struct Connect;
 
-    subscription::channel(
-        std::any::TypeId::of::<Connect>(),
+    stream::channel(
         100,
-        |output| async move { handle_connection(output, server).await },
+        |output| async move { handle_connection(output, svr).await },
     )
 }
 
 async fn handle_connection(mut output: Sender<Event>, mut server: Arc<KodiServer>) -> ! {
+    // let (svrsender, svrreciever) = channel(5);
+    // let _ = output.send(Event::NoServer(SvrConnection(svrsender))).await;
     let mut state = State::Disconnected;
-
+    // let mut server: Option<Arc<KodiServer>> = None;
     let mut poller = interval(Duration::from_secs(1));
     let mut notifications: StreamMap<&str, WsSubscription<Value>> = StreamMap::new();
 
@@ -73,12 +75,12 @@ async fn handle_connection(mut output: Sender<Event>, mut server: Arc<KodiServer
             State::Disconnected => {
                 match WsClientBuilder::default()
                     .build(server.websocket_url())
+                    // .build("ws://192.168.1.22:9090")
                     .await
                 {
                     Ok(client) => {
                         let (sender, reciever) = channel(100);
                         let _ = output.send(Event::Connected(Connection(sender))).await;
-
                         // TODO: More notifications?
                         ws_subscribe(
                             vec!["Player.OnPlay", "Player.OnStop", "Input.OnInputRequested"],
@@ -147,6 +149,7 @@ async fn handle_connection(mut output: Sender<Event>, mut server: Arc<KodiServer
 
                     message = input.select_next_some() => {
                         dbg!(&message);
+
                         if let KodiCommand::ChangeServer(srv) = message {
                             server = srv;
                             state = State::Disconnected;
@@ -496,7 +499,7 @@ async fn handle_kodi_command(
 async fn handle_notification(
     client: &Client,
     function: &str,
-    data: Result<Value, ClientError>,
+    data: Result<Value, serde_json::Error>,
 ) -> Result<Event, Box<dyn Error + Sync + Send>> {
     match function {
         "Player.OnPlay" => {
@@ -531,6 +534,7 @@ async fn handle_notification(
 
 #[derive(Debug)]
 enum State {
+    // NoServer(Arc<KodiServer>),
     Disconnected,
     Connected(Client, Receiver<KodiCommand>),
 }
