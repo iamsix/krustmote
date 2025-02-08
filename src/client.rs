@@ -44,8 +44,6 @@ macro_rules! rpc_obj_params {
 
 #[derive(Debug, Clone)]
 pub struct Connection(Sender<KodiCommand>);
-#[derive(Debug, Clone)]
-pub struct SvrConnection(Sender<Arc<KodiServer>>);
 
 impl Connection {
     pub fn send(&mut self, message: KodiCommand) {
@@ -55,63 +53,50 @@ impl Connection {
     }
 }
 
-impl SvrConnection {
-    pub fn send(&mut self, svr: Arc<KodiServer>) {
-        self.0
-            .try_send(svr)
-            .expect("Should be able to send a server for the client to connect to");
-    }
-}
-
-pub fn connect() -> impl Stream<Item = Event> {
+pub fn connect(svr: Arc<KodiServer>) -> impl Stream<Item = Event> {
     // struct Connect;
 
-    stream::channel(100, |output| async move { handle_connection(output).await })
+    stream::channel(
+        100,
+        |output| async move { handle_connection(output, svr).await },
+    )
 }
 
-async fn handle_connection(mut output: Sender<Event>) -> ! {
-    let (svrsender, svrreciever) = channel(5);
-    let _ = output.send(Event::NoServer(SvrConnection(svrsender))).await;
-    let mut state = State::NoServer(svrreciever);
-    let mut server: Option<Arc<KodiServer>> = None;
+async fn handle_connection(mut output: Sender<Event>, mut server: Arc<KodiServer>) -> ! {
+    // let (svrsender, svrreciever) = channel(5);
+    // let _ = output.send(Event::NoServer(SvrConnection(svrsender))).await;
+    let mut state = State::Disconnected;
+    // let mut server: Option<Arc<KodiServer>> = None;
     let mut poller = interval(Duration::from_secs(1));
     let mut notifications: StreamMap<&str, WsSubscription<Value>> = StreamMap::new();
 
     loop {
         match &mut state {
             State::Disconnected => {
-                if let Some(server) = &server {
-                    match WsClientBuilder::default()
-                        .build(server.websocket_url())
-                        // .build("ws://192.168.1.22:9090")
-                        .await
-                    {
-                        Ok(client) => {
-                            let (sender, reciever) = channel(100);
-                            let _ = output.send(Event::Connected(Connection(sender))).await;
-                            // TODO: More notifications?
-                            ws_subscribe(
-                                vec!["Player.OnPlay", "Player.OnStop", "Input.OnInputRequested"],
-                                &client,
-                                &mut notifications,
-                            )
-                            .await;
+                match WsClientBuilder::default()
+                    .build(server.websocket_url())
+                    // .build("ws://192.168.1.22:9090")
+                    .await
+                {
+                    Ok(client) => {
+                        let (sender, reciever) = channel(100);
+                        let _ = output.send(Event::Connected(Connection(sender))).await;
+                        // TODO: More notifications?
+                        ws_subscribe(
+                            vec!["Player.OnPlay", "Player.OnStop", "Input.OnInputRequested"],
+                            &client,
+                            &mut notifications,
+                        )
+                        .await;
 
-                            state = State::Connected(client, reciever);
-                        }
-                        Err(err) => {
-                            dbg!(err);
-                            let _ = output.send(Event::Disconnected).await;
-                            tokio::time::sleep(Duration::from_secs(5)).await;
-                        }
+                        state = State::Connected(client, reciever);
+                    }
+                    Err(err) => {
+                        dbg!(err);
+                        let _ = output.send(Event::Disconnected).await;
+                        tokio::time::sleep(Duration::from_secs(5)).await;
                     }
                 }
-            }
-
-            State::NoServer(input) => {
-                let svr = input.select_next_some().await;
-                server = Some(svr);
-                state = State::Disconnected;
             }
 
             State::Connected(client, input) => {
@@ -166,7 +151,7 @@ async fn handle_connection(mut output: Sender<Event>) -> ! {
                         dbg!(&message);
 
                         if let KodiCommand::ChangeServer(srv) = message {
-                            server = Some(srv);
+                            server = srv;
                             state = State::Disconnected;
                             let _ = output.send(Event::Disconnected);
                             continue;
@@ -551,7 +536,6 @@ async fn handle_notification(
 enum State {
     // NoServer(Arc<KodiServer>),
     Disconnected,
-    NoServer(Receiver<Arc<KodiServer>>),
     Connected(Client, Receiver<KodiCommand>),
 }
 
@@ -559,7 +543,6 @@ enum State {
 pub enum Event {
     Connected(Connection),
     Disconnected,
-    NoServer(SvrConnection),
     None,
     UpdateSources(Vec<Sources>),
     UpdateDirList(Vec<DirList>, String),

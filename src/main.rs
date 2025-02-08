@@ -483,7 +483,10 @@ impl Krustmote {
             Subscription::run(db::connect).map(Message::DbEvent),
         ];
         if let Some(_kodi_server) = &self.kodi_status.server {
-            subs.push(Subscription::run(client::connect).map(Message::ServerEvent));
+            subs.push(
+                Subscription::run_with_id(42, client::connect(Arc::clone(_kodi_server)))
+                    .map(Message::ServerEvent),
+            );
 
             // subs.push(
             //     Subscription::run(client::connect(Arc::clone(kodi_server)))
@@ -589,12 +592,6 @@ impl Krustmote {
             client::Event::Disconnected => {
                 self.kodi_status.active_player_id = None;
                 self.state = State::Disconnected;
-            }
-
-            client::Event::NoServer(mut connection) => {
-                if let Some(svr) = &self.kodi_status.server {
-                    connection.send(Arc::clone(&svr))
-                }
             }
 
             client::Event::UpdateDirList(dirlist, path) => {
