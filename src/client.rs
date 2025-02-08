@@ -2,8 +2,6 @@ use jsonrpsee::core::client::{
     Client, ClientT, Subscription as WsSubscription, SubscriptionClientT,
 };
 use jsonrpsee::core::params::ObjectParams;
-// use jsonrpsee::core::Error;
-// use jsonrpsee::core::ClientError;
 use jsonrpsee::rpc_params;
 use jsonrpsee::ws_client::WsClientBuilder;
 
@@ -13,7 +11,6 @@ use serde_json::{Map, Value};
 use iced::futures::channel::mpsc::{channel, Receiver, Sender};
 use iced::futures::{SinkExt, Stream, StreamExt};
 use iced::stream;
-// use iced::subscription::{self, Subscription};
 
 use tokio::select;
 use tokio::time::{interval, Duration};
@@ -54,8 +51,6 @@ impl Connection {
 }
 
 pub fn connect(svr: Arc<KodiServer>) -> impl Stream<Item = Event> {
-    // struct Connect;
-
     stream::channel(
         100,
         |output| async move { handle_connection(output, svr).await },
@@ -63,10 +58,7 @@ pub fn connect(svr: Arc<KodiServer>) -> impl Stream<Item = Event> {
 }
 
 async fn handle_connection(mut output: Sender<Event>, mut server: Arc<KodiServer>) -> ! {
-    // let (svrsender, svrreciever) = channel(5);
-    // let _ = output.send(Event::NoServer(SvrConnection(svrsender))).await;
     let mut state = State::Disconnected;
-    // let mut server: Option<Arc<KodiServer>> = None;
     let mut poller = interval(Duration::from_secs(1));
     let mut notifications: StreamMap<&str, WsSubscription<Value>> = StreamMap::new();
 
@@ -75,7 +67,6 @@ async fn handle_connection(mut output: Sender<Event>, mut server: Arc<KodiServer
             State::Disconnected => {
                 match WsClientBuilder::default()
                     .build(server.websocket_url())
-                    // .build("ws://192.168.1.22:9090")
                     .await
                 {
                     Ok(client) => {

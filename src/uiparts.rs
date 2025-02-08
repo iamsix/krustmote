@@ -3,14 +3,11 @@ use iced::Element;
 use iced::Length;
 
 use iced::font::{Family, Font, Weight};
-// use iced::theme;
 use iced::widget::scrollable::Id;
 use iced::widget::{
     button, column, container, image, pick_list, row, scrollable, text, text_input, Button,
     Checkbox, Rule, Slider, Space,
 };
-use iced::Theme;
-// use iced::Theme;
 
 use super::Krustmote;
 use super::BLANK_IMAGE;
@@ -20,8 +17,7 @@ use super::{ListData, Message, Modals, State};
 use crate::db;
 use crate::icons;
 use crate::koditypes::*;
-// use crate::themes;
-// use crate::themes;
+use crate::themes;
 
 use chrono;
 
@@ -65,7 +61,6 @@ pub(crate) fn make_subtitle_modal<'a>(
     .width(500)
     .padding(10)
     .style(|_| container::Style::default().background(iced::Theme::Dracula.palette().background))
-    //.style(Theme::Dark)
 }
 
 pub(crate) fn make_audio_modal<'a>(
@@ -126,61 +121,6 @@ pub(crate) fn request_text_modal<'a>(
     .style(|_| container::Style::default().background(iced::Theme::Dracula.palette().background))
 }
 
-const DARK: Color = Color::from_rgb(0.2, 0.2, 0.2);
-const DARK_HILIGHT: Color = Color::from_rgb(0.3, 0.3, 0.3);
-
-pub fn bare(_theme: &Theme, status: button::Status) -> button::Style {
-    // let palette = theme.extended_palette();
-    match status {
-        button::Status::Active => button::Style {
-            background: None,
-            text_color: Color::WHITE,
-            ..Default::default()
-        },
-        button::Status::Hovered => button::Style {
-            background: Some(iced::Background::Color(DARK_HILIGHT)),
-            text_color: Color::WHITE,
-            ..Default::default()
-        },
-        button::Status::Pressed => button::Style {
-            background: Some(iced::Background::Color(DARK)),
-            text_color: Color::WHITE,
-            ..Default::default()
-        },
-        button::Status::Disabled => button::Style {
-            background: None,
-            text_color: Color::from_rgba(1.0, 1.0, 1.0, 0.2),
-            ..Default::default()
-        },
-    }
-}
-
-pub fn listitem(_theme: &Theme, status: button::Status) -> button::Style {
-    // let palette = theme.extended_palette();
-    match status {
-        button::Status::Active => button::Style {
-            background: Some(iced::Background::Color(DARK)),
-            text_color: Color::WHITE,
-            ..Default::default()
-        },
-        button::Status::Hovered => button::Style {
-            background: Some(iced::Background::Color(DARK_HILIGHT)),
-            text_color: Color::WHITE,
-            ..Default::default()
-        },
-        button::Status::Pressed => button::Style {
-            background: Some(iced::Background::Color(DARK)),
-            text_color: Color::WHITE,
-            ..Default::default()
-        },
-        button::Status::Disabled => button::Style {
-            background: Some(iced::Background::Color(DARK)),
-            text_color: Color::from_rgba(1.0, 1.0, 1.0, 0.2),
-            ..Default::default()
-        },
-    }
-}
-
 pub(crate) fn playing_bar<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> {
     let duration = krustmote.kodi_status.player_props.totaltime.total_seconds();
     let play_time = krustmote.kodi_status.player_props.time.total_seconds();
@@ -218,12 +158,12 @@ pub(crate) fn playing_bar<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> 
                 row![
                     Space::new(Length::Fill, 5),
                     button(icons::skip_previous().size(32).height(48))
-                        .style(bare)
+                        .style(themes::bare_button)
                         .on_press(Message::KodiReq(KodiCommand::InputExecuteAction(
                             "skipprevious"
                         ))),
                     button(icons::fast_rewind().size(32).height(48))
-                        .style(bare)
+                        .style(themes::bare_button)
                         .on_press(Message::KodiReq(KodiCommand::InputExecuteAction("rewind"))),
                     button(if krustmote.kodi_status.player_props.speed != 0.0 {
                         icons::pause_clircle_filled().size(48)
@@ -233,29 +173,29 @@ pub(crate) fn playing_bar<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> 
                     .on_press(Message::KodiReq(KodiCommand::InputExecuteAction(
                         "playpause"
                     )))
-                    .style(bare),
+                    .style(themes::bare_button),
                     button(icons::fast_forward().size(32).height(48))
-                        .style(bare)
+                        .style(themes::bare_button)
                         .on_press(Message::KodiReq(KodiCommand::InputExecuteAction(
                             "fastforward"
                         ))),
                     button(icons::skip_next().size(32).height(48))
-                        .style(bare)
+                        .style(themes::bare_button)
                         .on_press(Message::KodiReq(KodiCommand::InputExecuteAction(
                             "skipnext"
                         ))),
                     button(icons::stop().size(32).height(48))
                         .on_press(Message::KodiReq(KodiCommand::InputExecuteAction("stop")))
-                        .style(bare),
+                        .style(themes::bare_button),
                     Space::new(20, 5),
                     column![
                         button(icons::subtitles())
                             .on_press(Message::ShowModal(Modals::Subtitles))
-                            .style(bare),
+                            .style(themes::bare_button),
                         button(icons::hearing())
                             .on_press(Message::ShowModal(Modals::Audio))
-                            .style(bare),
-                        button(icons::videocam()).style(bare),
+                            .style(themes::bare_button),
+                        button(icons::videocam()).style(themes::bare_button),
                     ],
                     Space::new(10, 5),
                 ]
@@ -275,7 +215,7 @@ pub(crate) fn top_bar<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
     container(row![
         button(icons::menu())
             .on_press(Message::ToggleLeftMenu)
-            .style(bare),
+            .style(themes::bare_button),
         Space::new(Length::Fill, Length::Shrink),
         text_input("Filter..", &krustmote.item_list.filter)
             .on_input(Message::FilterFileList)
@@ -341,12 +281,12 @@ pub(crate) fn file_list<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> {
             .on_press(Message::UpBreadCrumb)
             .width(Length::Fill)
             .height(50)
-            .style(listitem)
+            .style(themes::listitem)
         } else {
             button(text(&krustmote.item_list.list_title))
                 .width(Length::Fill)
                 .height(50)
-                .style(listitem)
+                .style(themes::listitem)
         },]
         .spacing(1)
         .padding(iced::Padding {
@@ -421,12 +361,10 @@ pub(crate) fn make_listitem(data: &ListData) -> Button<Message> {
     .on_press(data.on_click.clone())
     .width(Length::Fill)
     .height(ITEM_HEIGHT as f32)
-    .style(listitem)
-    // let bare = |_| button::Style::default().with_background(Color::TRANSPARENT);
+    .style(themes::listitem)
 }
 
 pub(crate) fn left_menu<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> {
-    // let bare = themes::ColoredButton::Bare;
     container(
         column![
             row![
@@ -446,7 +384,7 @@ pub(crate) fn left_menu<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> {
                     button(row![icons::folder(), "Files"].align_y(iced::Alignment::Center))
                         .on_press(Message::KodiReq(KodiCommand::GetSources(MediaType::Video)))
                         .width(Length::Fill)
-                        .style(bare),
+                        .style(themes::bare_button),
                 )
                 .width(Length::Fill)
             } else {
@@ -455,10 +393,10 @@ pub(crate) fn left_menu<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> {
             button(row![icons::movie(), "Movies"].align_y(iced::Alignment::Center))
                 .on_press(Message::DbQuery(db::SqlCommand::GetMovieList))
                 .width(Length::Fill)
-                .style(bare),
+                .style(themes::bare_button),
             button(row![icons::settings(), "Settings"].align_y(iced::Alignment::Center))
                 .width(Length::Fill)
-                .style(bare)
+                .style(themes::bare_button)
                 .on_press(Message::ShowSettings),
         ]
         .spacing(1)

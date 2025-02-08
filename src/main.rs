@@ -27,7 +27,7 @@ mod icons;
 mod koditypes;
 mod modal;
 mod settingsui;
-// mod themes;
+mod themes;
 mod uiparts;
 
 use modal::Modal;
@@ -390,9 +390,7 @@ impl Krustmote {
                             let srv = Arc::new(servers[0].clone());
                             self.kodi_status.server = Some(Arc::clone(&srv));
                             self.content_area = ContentArea::Files;
-                            dbg!(&self.state);
                             // if matches!(self.state, State::Disconnected) {
-                            //     dbg!("Here?");
                             self.kodi_status.active_player_id = None;
                             let cmd = Message::KodiReq(KodiCommand::ChangeServer(Arc::clone(&srv)));
                             return Command::perform(async {}, move |_| cmd.clone());
@@ -482,16 +480,11 @@ impl Krustmote {
             }),
             Subscription::run(db::connect).map(Message::DbEvent),
         ];
-        if let Some(_kodi_server) = &self.kodi_status.server {
+        if let Some(kodi_server) = &self.kodi_status.server {
             subs.push(
-                Subscription::run_with_id(42, client::connect(Arc::clone(_kodi_server)))
+                Subscription::run_with_id(42, client::connect(Arc::clone(kodi_server)))
                     .map(Message::ServerEvent),
             );
-
-            // subs.push(
-            //     Subscription::run(client::connect(Arc::clone(kodi_server)))
-            //         .map(Message::ServerEvent),
-            // );
         };
 
         iced::Subscription::batch(subs)
@@ -537,10 +530,6 @@ impl Krustmote {
             content
         }
     }
-
-    // fn theme(&self) -> Self::Theme {
-    //     Theme::Dark
-    // }
 }
 
 impl Krustmote {
