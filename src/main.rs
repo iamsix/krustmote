@@ -1,10 +1,7 @@
-// use iced::executor;
 use iced::font;
-// use iced::theme::Theme;
 use iced::widget::scrollable::Id;
-use iced::widget::text_input;
-// use iced::time;
-use iced::widget::{column, container, image, row, scrollable};
+use iced::widget::{center, column, container, image, mouse_area, row, scrollable, stack};
+use iced::widget::{opaque, text_input};
 
 use iced::{event, window, Element, Event, Length, Subscription, Task as Command};
 
@@ -14,7 +11,6 @@ use reqwest;
 use std::path::Path;
 use tokio::fs;
 use tokio::sync::Semaphore;
-// use urlencoding;
 
 use indexmap::IndexMap;
 use std::error::Error;
@@ -25,12 +21,12 @@ mod client;
 mod db;
 mod icons;
 mod koditypes;
-mod modal;
+// mod modal;
 mod settingsui;
 mod themes;
 mod uiparts;
 
-use modal::Modal;
+// use modal::Modal;
 
 use koditypes::*;
 
@@ -523,9 +519,13 @@ impl Krustmote {
         };
 
         if let Some(modal) = modal {
-            Modal::new(content, modal)
-                .on_blur(Message::ShowModal(Modals::None))
-                .into()
+            stack![
+                content,
+                opaque(
+                    mouse_area(center(opaque(modal))).on_press(Message::ShowModal(Modals::None))
+                )
+            ]
+            .into()
         } else {
             content
         }
