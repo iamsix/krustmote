@@ -418,10 +418,12 @@ async fn handle_kodi_command(
 
         // Testing...
         // TODO: Decide if I want this to be able to directly send data to DB?
-        // can do so by cloning the SqlQonnection
+        //       can do so by cloning the SqlQonnection
         KodiCommand::VideoLibraryGetMovies => {
             // I tested tokio::spawn here but kodi itself delays other requests while this runs
-            // (even from other connections/clients/etc)
+            //   (even from other connections/clients/etc)
+            // I think I can incremental (and check if needed) update
+            //   by sorting by dateadded and 'limit'ing
             let response: Value = client
                 .request(
                     "VideoLibrary.GetMovies",
@@ -433,6 +435,49 @@ async fn handle_kodi_command(
                 .expect("MovieListItem should deserialize");
 
             Ok(Event::UpdateMovieList(movies))
+        }
+
+        // checking the data here...
+        KodiCommand::VideoLibraryGetTVShows => {
+            // Might make this command do multiple queries to get all tv/season/ep data
+            // then put it all together and update the DB with a single object or giant array
+            let response: Value = client
+                .request(
+                    "VideoLibrary.GetTVShows",
+                    rpc_obj_params!("properties" = MINIMAL_TV_PROPS),
+                )
+                .await?;
+
+            let shows = <Vec<TVShowListItem> as Deserialize>::deserialize(&response["tvshows"])
+                .expect("TVShowListItem should deserialize");
+            dbg!(&shows[0]);
+
+            Ok(Event::None)
+        }
+
+        KodiCommand::VideoLibraryGetTVSeasons => {
+            let response: Value = client
+                .request("VideoLibrary.GetSeasons", rpc_obj_params!("tvshowid" = 1))
+                .await?;
+
+            dbg!(response);
+
+            Ok(Event::None)
+        }
+
+        KodiCommand::VideoLibraryGetTVEpisodes => {
+            // similar to movies can probably increment with dateadded / limit
+            // note tvshowid seems optional but without limit would be huge
+            let response: Value = client
+                .request(
+                    "VideoLibrary.GetEpisodes",
+                    rpc_obj_params!("tvshowid" = 1, "properties" = MINIMAL_TV_PROPS),
+                )
+                .await?;
+
+            dbg!(response);
+
+            Ok(Event::None)
         }
 
         // Debug command
@@ -525,7 +570,6 @@ async fn handle_notification(
 
 #[derive(Debug)]
 enum State {
-    // NoServer(Arc<KodiServer>),
     Disconnected,
     Connected(Client, Receiver<KodiCommand>),
 }

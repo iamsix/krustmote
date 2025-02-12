@@ -417,6 +417,9 @@ pub(crate) fn remote<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
             // seems like I could template these buttons in some way
             button(icons::bug_report()).on_press(Message::KodiReq(KodiCommand::Test)),
             button("Movies-test").on_press(Message::KodiReq(KodiCommand::VideoLibraryGetMovies)),
+            button("TV-test").on_press(Message::KodiReq(KodiCommand::VideoLibraryGetTVShows)),
+            button("Sason-test").on_press(Message::KodiReq(KodiCommand::VideoLibraryGetTVSeasons)),
+            button("Eps-test").on_press(Message::KodiReq(KodiCommand::VideoLibraryGetTVEpisodes)),
             button("playerid-test").on_press(Message::KodiReq(KodiCommand::PlayerGetActivePlayers)),
             button("props-test").on_press(Message::KodiReq(KodiCommand::PlayerGetProperties)),
             button("item-test").on_press(Message::KodiReq(KodiCommand::PlayerGetPlayingItemDebug(

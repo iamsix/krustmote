@@ -38,6 +38,9 @@ pub enum KodiCommand {
     InputSendText(String),
 
     VideoLibraryGetMovies,
+    VideoLibraryGetTVShows,
+    VideoLibraryGetTVSeasons,
+    VideoLibraryGetTVEpisodes,
 
     PlayerGetProperties,
     PlayerGetPlayingItem(u8),
@@ -336,6 +339,8 @@ pub struct DirList {
     pub season: Option<i16>,
     pub episode: Option<i16>,
     pub playcount: Option<i16>,
+    #[serde(default)]
+    pub resume: Option<ResumePoint>,
     pub year: Option<u16>,
     #[serde(rename = "type")]
     pub type_: VideoType,
@@ -586,7 +591,8 @@ impl PlayingItem {
 //     "uniqueid",
 // ];
 
-// should add originaltitle for searching, and resume? runtime might also be nice for list display
+// should add originaltitle for searching, and resume?
+//   runtime might also be nice for list display
 pub const MINIMAL_MOVIE_PROPS: [&'static str; 9] = [
     "title",
     "year",
@@ -599,6 +605,20 @@ pub const MINIMAL_MOVIE_PROPS: [&'static str; 9] = [
     "art",
 ];
 
+pub const MINIMAL_TV_PROPS: [&'static str; 8] = [
+    "title",
+    "file",   // just returns the folder, not sure I even need this.
+    "season", //no of seasons
+    // episode, // likely a count of them when full show? watchedepisodes also a thing
+    "dateadded",
+    "genre",
+    "rating",
+    // "premiered",
+    "playcount", // not sure if it works?
+    "art",
+    // sorttitle //? might be useless?
+];
+
 #[derive(Deserialize, Debug, Clone)]
 pub struct MovieListItem {
     pub movieid: u32,
@@ -609,6 +629,20 @@ pub struct MovieListItem {
     pub genre: Vec<String>,
     pub rating: f64,
     pub premiered: String,
+    pub playcount: i16,
+    pub art: Art,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct TVShowListItem {
+    pub tvshowid: u32,
+    pub title: String,
+    pub season: u16,
+    pub file: String,
+    pub dateadded: String,
+    pub genre: Vec<String>,
+    pub rating: f64,
+    // pub premiered: String,
     pub playcount: i16,
     pub art: Art,
 }
@@ -661,36 +695,36 @@ impl IntoListData for MovieListItem {
     }
 }
 
-#[derive(Deserialize, Debug, Clone)]
-pub struct MovieProps {
-    pub movieid: u32,
-    pub title: String,
-    pub genre: Vec<String>,
-    pub year: u16,
-    pub rating: f64,
-    pub director: Vec<String>,
-    pub trailer: String,
-    pub tagline: String,
-    pub plot: String,
-    pub originaltitle: String,
-    pub lastplayed: String, // maybe date?
-    pub playcount: u16,
-    pub writer: Vec<String>,
-    pub mpaa: String,
-    pub cast: Vec<Cast>,
-    pub country: Vec<String>,
-    pub runtime: u32,
-    pub streamdetails: StreamDetails,
-    // votes: String,
-    pub file: String,
-    pub resume: ResumePoint,
-    pub setid: u16,
-    pub dateadded: String,
-    pub tag: Vec<String>,
-    pub art: Art,
-    pub premiered: String,
-    pub uniqueid: UniqueId,
-}
+// #[derive(Deserialize, Debug, Clone)]
+// pub struct MovieProps {
+//     pub movieid: u32,
+//     pub title: String,
+//     pub genre: Vec<String>,
+//     pub year: u16,
+//     pub rating: f64,
+//     pub director: Vec<String>,
+//     pub trailer: String,
+//     pub tagline: String,
+//     pub plot: String,
+//     pub originaltitle: String,
+//     pub lastplayed: String, // maybe date?
+//     pub playcount: u16,
+//     pub writer: Vec<String>,
+//     pub mpaa: String,
+//     pub cast: Vec<Cast>,
+//     pub country: Vec<String>,
+//     pub runtime: u32,
+//     pub streamdetails: StreamDetails,
+//     // votes: String,
+//     pub file: String,
+//     pub resume: ResumePoint,
+//     pub setid: u16,
+//     pub dateadded: String,
+//     pub tag: Vec<String>,
+//     pub art: Art,
+//     pub premiered: String,
+//     pub uniqueid: UniqueId,
+// }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Cast {
@@ -700,15 +734,15 @@ pub struct Cast {
     thumbnail: Option<String>,
 }
 
-#[derive(Deserialize, Debug, Clone)]
-pub struct UniqueId {
-    pub imdb: String,
-}
+// #[derive(Deserialize, Debug, Clone)]
+// pub struct UniqueId {
+//     pub imdb: String,
+// }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Debug, Clone, Default)]
 pub struct ResumePoint {
-    pub position: f64,
-    pub total: f64,
+    pub position: f64, // Position of resume in seconds
+    pub total: f64,    // total runtime again for some reason
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -753,7 +787,8 @@ pub struct KodiServer {
     pub webserver_port: u16,
     pub username: String,
     pub password: String,
-    pub db_id: u8,
+    pub db_id: u8, // The movie/tv info database number for sharing
+                   // KodiServer.id==1 can use the same db_id=0 as id==0
 }
 
 impl KodiServer {

@@ -21,12 +21,9 @@ mod client;
 mod db;
 mod icons;
 mod koditypes;
-// mod modal;
 mod settingsui;
 mod themes;
 mod uiparts;
-
-// use modal::Modal;
 
 use koditypes::*;
 
@@ -231,7 +228,7 @@ impl Krustmote {
             Message::SettingsEvent(event) => match event {
                 settingsui::Event::AddServer(srv) => {
                     let q = db::SqlCommand::AddOrEditServer(srv);
-                    return Command::perform(async {}, move |_| Message::DbQuery(q.clone()));
+                    return Command::perform(async { q }, move |q| Message::DbQuery(q));
                 }
                 settingsui::Event::Cancel => {
                     self.content_area = ContentArea::Files;
@@ -259,7 +256,7 @@ impl Krustmote {
                     self.send_text = "".to_string();
                 }
 
-                return Command::perform(async {}, move |_| Message::KodiReq(cmd.clone()));
+                return Command::perform(async { cmd }, move |cmd| Message::KodiReq(cmd));
             }
 
             Message::ShowModal(modal) => {
@@ -274,7 +271,7 @@ impl Krustmote {
 
             Message::UpBreadCrumb => {
                 let cmd = self.up_breadcrumb();
-                return Command::perform(async {}, move |_| Message::KodiReq(cmd.clone()));
+                return Command::perform(async { cmd }, move |c| Message::KodiReq(c));
             }
 
             Message::Scrolled(view) => {
@@ -296,7 +293,7 @@ impl Krustmote {
                     subtitle_index: sub.index,
                     enabled: self.kodi_status.player_props.subtitleenabled,
                 };
-                return Command::perform(async {}, move |_| Message::KodiReq(cmd.clone()));
+                return Command::perform(async { cmd }, move |c| Message::KodiReq(c));
             }
 
             Message::SubtitleToggle(val) => {
@@ -309,7 +306,7 @@ impl Krustmote {
                         .expect("Should be playing if this is called"),
                     on_off,
                 };
-                return Command::perform(async {}, move |_| Message::KodiReq(cmd.clone()));
+                return Command::perform(async { cmd }, move |c| Message::KodiReq(c));
                 // send SubtitlePicked here with current_subtitle?
             }
 
@@ -321,7 +318,7 @@ impl Krustmote {
                         .expect("Should be playing if this is called"),
                     audio_index: val.index,
                 };
-                return Command::perform(async {}, move |_| Message::KodiReq(cmd.clone()));
+                return Command::perform(async { cmd }, move |c| Message::KodiReq(c));
             }
 
             Message::SendTextInput(text) => {
@@ -359,7 +356,7 @@ impl Krustmote {
                         .expect("should have a player_id if this is visible"),
                     self.kodi_status.player_props.time.clone(),
                 );
-                return Command::perform(async {}, move |_| Message::KodiReq(cmd.clone()));
+                return Command::perform(async { cmd }, move |c| Message::KodiReq(c));
             }
 
             Message::DbEvent(event) => {
@@ -389,7 +386,7 @@ impl Krustmote {
                             // if matches!(self.state, State::Disconnected) {
                             self.kodi_status.active_player_id = None;
                             let cmd = Message::KodiReq(KodiCommand::ChangeServer(Arc::clone(&srv)));
-                            return Command::perform(async {}, move |_| cmd.clone());
+                            return Command::perform(async { cmd }, move |c| c);
                             // }
                         }
                     }
@@ -400,8 +397,9 @@ impl Krustmote {
                             scrollable::RelativeOffset { x: 0.0, y: 0.0 },
                         )];
                         if movies.is_empty() {
-                            let cmd = Message::KodiReq(KodiCommand::VideoLibraryGetMovies);
-                            commands.push(Command::perform(async {}, move |_| cmd.clone()));
+                            commands.push(Command::perform(async {}, move |_| {
+                                Message::KodiReq(KodiCommand::VideoLibraryGetMovies)
+                            }));
                         }
 
                         self.item_list.list_title = "Movies".to_string();
@@ -655,9 +653,9 @@ impl Krustmote {
             }
 
             client::Event::UpdateMovieList(movies) => {
-                // panic!("Can't do this rn");
-                let cmd = Message::DbQuery(db::SqlCommand::InsertMovies(movies));
-                return Some(Command::perform(async {}, move |_| cmd.clone()));
+                return Some(Command::perform(async { movies }, move |m| {
+                    Message::DbQuery(db::SqlCommand::InsertMovies(m))
+                }));
             }
 
             client::Event::None => {}
