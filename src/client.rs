@@ -466,7 +466,9 @@ async fn handle_kodi_command(
             let seasons = <Vec<TVSeasonListItem> as Deserialize>::deserialize(&response["seasons"])
                 .expect("TVShowListItem should deserialize");
 
-            dbg!("Start episodes query");
+            // Much like movie list I tried parallelizing / spawning
+            // but it just causes lag for other clients and isn't faster
+            // likely better approach will be data layer + dynamic load
             let mut episodes = Vec::new();
             for show in &shows {
                 let response: Value = client

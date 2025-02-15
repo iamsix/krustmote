@@ -193,7 +193,7 @@ async fn get_tv_show_seasons(
     let tvshowid = tvshow.tvshowid;
     let seasons_result = conn
         .call(move |conn| {
-            let q = "SELECT * FROM tvseasonlist WHERE tvshowid = ?1";
+            let q = "SELECT * FROM tvseasonlist WHERE tvshowid = ?1 ORDER BY season";
             let mut stmt = conn.prepare(q)?;
             let seasons = stmt
                 .query_map([tvshowid], |row| {
@@ -228,12 +228,21 @@ async fn get_tv_episode_list(
         .call(move |conn| {
             let (q, params) = if season == -1 {
                 (
-                    "SELECT * FROM tvepisodelist WHERE tvshowid = ?1 ORDER BY season ASC, episode ASC",
+                    "SELECT * FROM tvepisodelist WHERE tvshowid = ?1
+                    ORDER BY 
+                        CASE WHEN specialsortseason = -1 THEN season ELSE specialsortseason END ASC,
+                        CASE WHEN specialsortepisode = -1 THEN episode ELSE specialsortepisode END ASC;
+                    ",
                     params![tvshow],
                 )
             } else {
                 (
-                    "SELECT * FROM tvepisodelist WHERE tvshowid = ?1 AND season = ?2 ORDER BY episode ASC",
+                    "SELECT * FROM tvepisodelist
+                    WHERE tvshowid = ?1
+                      AND (season = ?2 OR specialsortseason = ?2)
+                    ORDER BY
+                        CASE WHEN specialsortseason = -1 THEN season ELSE specialsortseason END ASC,
+                        CASE WHEN specialsortepisode = -1 THEN episode ELSE specialsortepisode END ASC;",                   
                     params![tvshow, season],
                 )
             };
@@ -272,9 +281,19 @@ async fn get_tv_episode_list(
         })
         .await;
 
+    let tvtitle = conn
+        .call(move |conn| {
+            let q = "SELECT title FROM tvshowlist WHERE tvshowid = ?1";
+            let title = conn.query_row(q, [tvshow], |row| row.get(0))?;
+            Ok::<String, tokio_rusqlite::Error>(title)
+        })
+        .await;
+
     match episodes_result {
-        // TODO!!!!!!!!!!!!!!! DO A ONE-OFF QUERY HERE FOR SHOW NAME AND RETURN IN EVENT
-        Ok(episodes) => Ok(Event::UpdateEpisodeList(episodes)),
+        Ok(episodes) => Ok(Event::UpdateEpisodeList(
+            tvtitle.unwrap_or_default(),
+            episodes,
+        )),
         Err(err) => {
             dbg!(&err);
             Err(err) // Return the error
@@ -672,5 +691,5 @@ pub enum Event {
     UpdateMovieList(Vec<MovieListItem>),
     UpdateTVShowList(Vec<TVShowListItem>),
     UpdateTVSeasonList(TVShowListItem, Vec<TVSeasonListItem>),
-    UpdateEpisodeList(Vec<TVEpisodeListItem>),
+    UpdateEpisodeList(String, Vec<TVEpisodeListItem>),
 }

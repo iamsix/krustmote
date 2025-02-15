@@ -677,7 +677,11 @@ impl IntoListData for TVShowListItem {
     fn into_listdata(&self) -> crate::ListData {
         // This is where it gets complicated.
         // I need to do a DBReq here to make it show the seasons - supply tvshow
-        let on_click = crate::Message::DbQuery(SqlCommand::GetTVSeasons(self.clone()));
+        let on_click = if self.season == 1 {
+            crate::Message::DbQuery(SqlCommand::GetTVEpisodes(self.tvshowid, 1))
+        } else {
+            crate::Message::DbQuery(SqlCommand::GetTVSeasons(self.clone()))
+        };
 
         let bottom_left = Some(format!("Rating: {:.1}", self.rating));
         crate::ListData {

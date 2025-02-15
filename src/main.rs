@@ -478,7 +478,7 @@ impl Krustmote {
                         return Command::batch(commands);
                     }
 
-                    db::Event::UpdateEpisodeList(episodes) => {
+                    db::Event::UpdateEpisodeList(showtitle, episodes) => {
                         let commands = vec![scrollable::snap_to(
                             Id::new("files"),
                             scrollable::RelativeOffset { x: 0.0, y: 0.0 },
@@ -487,7 +487,9 @@ impl Krustmote {
                             panic!("Episode list for show is empty")
                         }
 
-                        self.item_list.list_title = "Show > Season # !!TODO".to_string();
+                        // the wrong way to do season # but ok for now
+                        self.item_list.list_title =
+                            format!("{} > Season {}", showtitle, &episodes[0].season);
                         self.item_list.raw_data =
                             episodes.into_iter().map(|v| Box::new(v) as _).collect();
 
