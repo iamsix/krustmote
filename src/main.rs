@@ -84,7 +84,8 @@ struct ItemList {
     raw_data: Vec<Box<dyn IntoListData>>,
     virtual_list: IndexMap<usize, ListData>,
     list_title: String,
-    breadcrumb: Vec<KodiCommand>,
+    // TODO: name each previous crumb.
+    breadcrumb: Vec<Message>,
     filter: String,
     filtered_count: usize,
     start_offset: u32,
@@ -271,7 +272,7 @@ impl Krustmote {
 
             Message::UpBreadCrumb => {
                 let cmd = self.up_breadcrumb();
-                return Command::perform(async { cmd }, move |c| Message::KodiReq(c));
+                return Command::perform(async { cmd }, move |c| c);
             }
 
             Message::Scrolled(view) => {
@@ -417,6 +418,89 @@ impl Krustmote {
                         return Command::batch(commands);
                     }
 
+                    db::Event::UpdateTVShowList(shows) => {
+                        let mut commands = vec![scrollable::snap_to(
+                            Id::new("files"),
+                            scrollable::RelativeOffset { x: 0.0, y: 0.0 },
+                        )];
+                        if shows.is_empty() {
+                            commands.push(Command::perform(async {}, move |_| {
+                                Message::KodiReq(KodiCommand::VideoLibraryGetTVShows)
+                            }));
+                        }
+
+                        self.item_list.list_title = "TV Shows".to_string();
+                        self.item_list.raw_data =
+                            shows.into_iter().map(|v| Box::new(v) as _).collect();
+
+                        self.item_list.filter = "".to_string();
+                        self.item_list.start_offset = 0;
+
+                        self.item_list.virtual_list = IndexMap::new();
+                        self.update_virtual_list();
+
+                        self.content_area = ContentArea::Files;
+                        return Command::batch(commands);
+                    }
+
+                    db::Event::UpdateTVSeasonList(tvshow, mut seasons) => {
+                        let commands = vec![scrollable::snap_to(
+                            Id::new("files"),
+                            scrollable::RelativeOffset { x: 0.0, y: 0.0 },
+                        )];
+                        if seasons.is_empty() {
+                            dbg!(tvshow);
+                            panic!("Season list for show is empty")
+                        }
+
+                        let tvshowid = seasons[0].tvshowid;
+                        seasons.insert(
+                            0,
+                            TVSeasonListItem {
+                                seasonid: 0,
+                                tvshowid,
+                                title: "All Seasons".to_string(),
+                                season: -1,
+                                episode: tvshow.episode,
+                            },
+                        );
+                        self.item_list.list_title = tvshow.title;
+                        self.item_list.raw_data =
+                            seasons.into_iter().map(|v| Box::new(v) as _).collect();
+
+                        self.item_list.filter = "".to_string();
+                        self.item_list.start_offset = 0;
+
+                        self.item_list.virtual_list = IndexMap::new();
+                        self.update_virtual_list();
+
+                        self.content_area = ContentArea::Files;
+                        return Command::batch(commands);
+                    }
+
+                    db::Event::UpdateEpisodeList(episodes) => {
+                        let commands = vec![scrollable::snap_to(
+                            Id::new("files"),
+                            scrollable::RelativeOffset { x: 0.0, y: 0.0 },
+                        )];
+                        if episodes.is_empty() {
+                            panic!("Episode list for show is empty")
+                        }
+
+                        self.item_list.list_title = "Show > Season # !!TODO".to_string();
+                        self.item_list.raw_data =
+                            episodes.into_iter().map(|v| Box::new(v) as _).collect();
+
+                        self.item_list.filter = "".to_string();
+                        self.item_list.start_offset = 0;
+
+                        self.item_list.virtual_list = IndexMap::new();
+                        self.update_virtual_list();
+
+                        self.content_area = ContentArea::Files;
+                        return Command::batch(commands);
+                    }
+
                     db::Event::None => {}
                 }
             }
@@ -427,6 +511,29 @@ impl Krustmote {
                 }
 
                 DbState::Open(conn) => {
+                    match &command {
+                        db::SqlCommand::GetTVShowList => {
+                            self.item_list.breadcrumb.clear();
+                            self.item_list
+                                .breadcrumb
+                                .push(Message::DbQuery(command.clone()));
+                            self.content_area = ContentArea::Loading;
+                        }
+                        db::SqlCommand::GetTVSeasons(_) => {
+                            self.item_list
+                                .breadcrumb
+                                .push(Message::DbQuery(command.clone()));
+                            self.content_area = ContentArea::Loading;
+                        }
+
+                        db::SqlCommand::GetTVEpisodes(_, _) => {
+                            self.item_list
+                                .breadcrumb
+                                .push(Message::DbQuery(command.clone()));
+                            self.content_area = ContentArea::Loading;
+                        }
+                        _ => {}
+                    }
                     conn.send(command);
                 }
             },
@@ -442,11 +549,15 @@ impl Krustmote {
                     match &command {
                         &KodiCommand::GetSources(_) => {
                             self.item_list.breadcrumb.clear();
-                            self.item_list.breadcrumb.push(command.clone());
+                            self.item_list
+                                .breadcrumb
+                                .push(Message::KodiReq(command.clone()));
                             self.content_area = ContentArea::Loading;
                         }
                         &KodiCommand::GetDirectory { .. } => {
-                            self.item_list.breadcrumb.push(command.clone());
+                            self.item_list
+                                .breadcrumb
+                                .push(Message::KodiReq(command.clone()));
                             self.content_area = ContentArea::Loading;
                         }
                         _ => {}
@@ -531,7 +642,7 @@ impl Krustmote {
 }
 
 impl Krustmote {
-    fn up_breadcrumb(&mut self) -> KodiCommand {
+    fn up_breadcrumb(&mut self) -> Message {
         // dbg!(&self.breadcrumb);
         let _ = self.item_list.breadcrumb.pop();
         let command = self.item_list.breadcrumb.pop();
@@ -656,6 +767,15 @@ impl Krustmote {
                 return Some(Command::perform(async { movies }, move |m| {
                     Message::DbQuery(db::SqlCommand::InsertMovies(m))
                 }));
+            }
+
+            client::Event::UpdateTVList(shows, seasons, episodes) => {
+                return Some(Command::perform(
+                    async { (shows, seasons, episodes) },
+                    move |(shows, seasons, episodes)| {
+                        Message::DbQuery(db::SqlCommand::InsertTVShows(shows, seasons, episodes))
+                    },
+                ));
             }
 
             client::Event::None => {}

@@ -394,6 +394,10 @@ pub(crate) fn left_menu<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> {
                 .on_press(Message::DbQuery(db::SqlCommand::GetMovieList))
                 .width(Length::Fill)
                 .style(themes::bare_button),
+            button(row![icons::tv(), "TV"].align_y(iced::Alignment::Center))
+                .on_press(Message::DbQuery(db::SqlCommand::GetTVShowList))
+                .width(Length::Fill)
+                .style(themes::bare_button),
             button(row![icons::settings(), "Settings"].align_y(iced::Alignment::Center))
                 .width(Length::Fill)
                 .style(themes::bare_button)

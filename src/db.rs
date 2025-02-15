@@ -13,6 +13,14 @@ pub enum SqlCommand {
     AddOrEditServer(KodiServer),
     InsertMovies(Vec<MovieListItem>),
     GetMovieList,
+    InsertTVShows(
+        Vec<TVShowListItem>,
+        Vec<TVSeasonListItem>,
+        Vec<TVEpisodeListItem>,
+    ),
+    GetTVShowList,
+    GetTVSeasons(TVShowListItem),
+    GetTVEpisodes(u32, i16),
 }
 
 enum State {
@@ -113,31 +121,181 @@ async fn handle_command(
         SqlCommand::InsertMovies(movies) => insert_movies(conn, movies).await,
 
         SqlCommand::GetMovieList => get_movie_list(conn).await,
+
+        SqlCommand::InsertTVShows(tvshows, seasons, episodes) => {
+            insert_tvshows(conn, tvshows).await?;
+            insert_tvseasons(conn, seasons).await?;
+            insert_tvepisodes(conn, episodes).await
+        }
+
+        SqlCommand::GetTVShowList => get_tv_show_list(conn).await,
+
+        SqlCommand::GetTVSeasons(tvshow) => get_tv_show_seasons(conn, tvshow).await,
+
+        SqlCommand::GetTVEpisodes(tvshow, season) => {
+            get_tv_episode_list(conn, tvshow, season).await
+        }
+    }
+}
+
+async fn get_tv_show_list(conn: &Connection) -> Result<Event, tokio_rusqlite::Error> {
+    let shows_result = conn
+        .call(move |conn| {
+            let q = "SELECT * FROM tvshowlist ORDER BY title";
+            let mut stmt = conn.prepare(q)?;
+            let shows = stmt
+                .query_map([], |row| {
+                    Ok(TVShowListItem {
+                        tvshowid: row.get(0)?,
+                        title: row.get(1)?,
+                        year: row.get(2)?,
+                        season: row.get(3)?,
+                        episode: row.get(4)?,
+                        file: row.get(5)?,
+                        dateadded: row.get(6)?,
+                        genre: {
+                            let genre_str: String = row.get(7)?;
+                            genre_str.split(",").map(String::from).collect()
+                        },
+                        rating: row.get(8)?,
+                        playcount: row.get(9)?,
+                        art: Art {
+                            poster: {
+                                let poster_str: String = row.get(10)?;
+                                if poster_str.is_empty() {
+                                    None
+                                } else {
+                                    Some(poster_str)
+                                }
+                            },
+                            thumb: None,
+                        },
+                    })
+                })?
+                .collect::<Result<Vec<TVShowListItem>, rusqlite::Error>>()?;
+            Ok::<_, tokio_rusqlite::Error>(shows)
+        })
+        .await;
+
+    match shows_result {
+        Ok(shows) => Ok(Event::UpdateTVShowList(shows)),
+        Err(err) => {
+            dbg!(&err);
+            Err(err) // Return the error
+        }
+    }
+}
+
+async fn get_tv_show_seasons(
+    conn: &Connection,
+    tvshow: TVShowListItem,
+) -> Result<Event, tokio_rusqlite::Error> {
+    let tvshowid = tvshow.tvshowid;
+    let seasons_result = conn
+        .call(move |conn| {
+            let q = "SELECT * FROM tvseasonlist WHERE tvshowid = ?1";
+            let mut stmt = conn.prepare(q)?;
+            let seasons = stmt
+                .query_map([tvshowid], |row| {
+                    Ok(TVSeasonListItem {
+                        seasonid: row.get(0)?,
+                        tvshowid: row.get(1)?,
+                        title: row.get(2)?,
+                        season: row.get(3)?,
+                        episode: row.get(4)?,
+                    })
+                })?
+                .collect::<Result<Vec<TVSeasonListItem>, rusqlite::Error>>()?;
+            Ok::<_, tokio_rusqlite::Error>(seasons)
+        })
+        .await;
+
+    match seasons_result {
+        Ok(seasons) => Ok(Event::UpdateTVSeasonList(tvshow, seasons)),
+        Err(err) => {
+            dbg!(&err);
+            Err(err) // Return the error
+        }
+    }
+}
+
+async fn get_tv_episode_list(
+    conn: &Connection,
+    tvshow: u32,
+    season: i16,
+) -> Result<Event, tokio_rusqlite::Error> {
+    let episodes_result = conn
+        .call(move |conn| {
+            let (q, params) = if season == -1 {
+                (
+                    "SELECT * FROM tvepisodelist WHERE tvshowid = ?1 ORDER BY season ASC, episode ASC",
+                    params![tvshow],
+                )
+            } else {
+                (
+                    "SELECT * FROM tvepisodelist WHERE tvshowid = ?1 AND season = ?2 ORDER BY episode ASC",
+                    params![tvshow, season],
+                )
+            };
+
+            let mut stmt = conn.prepare(q)?;
+            let episodes = stmt
+                .query_map(params, |row| {
+                    Ok(TVEpisodeListItem {
+                        episodeid: row.get(0)?,
+                        tvshowid: row.get(1)?,
+                        title: row.get(2)?,
+                        season: row.get(3)?,
+                        episode: row.get(4)?,
+                        file: row.get(5)?,
+                        dateadded: row.get(6)?,
+                        rating: row.get(7)?,
+                        firstaired: row.get(8)?,
+                        playcount: row.get(9)?,
+                        art: Art {
+                            poster: None,
+                            thumb: {
+                                let thumb_str: String = row.get(10)?;
+                                if thumb_str.is_empty() {
+                                    None
+                                } else {
+                                    Some(thumb_str)
+                                }
+                            },
+                        },
+                        specialsortseason: row.get(11)?,
+                        specialsortepisode: row.get(12)?,
+                    })
+                })?
+                .collect::<Result<Vec<TVEpisodeListItem>, rusqlite::Error>>()?;
+            Ok::<_, tokio_rusqlite::Error>(episodes)
+        })
+        .await;
+
+    match episodes_result {
+        // TODO!!!!!!!!!!!!!!! DO A ONE-OFF QUERY HERE FOR SHOW NAME AND RETURN IN EVENT
+        Ok(episodes) => Ok(Event::UpdateEpisodeList(episodes)),
+        Err(err) => {
+            dbg!(&err);
+            Err(err) // Return the error
+        }
     }
 }
 
 async fn get_movie_list(conn: &Connection) -> Result<Event, tokio_rusqlite::Error> {
-    let movies = conn
+    let movies_result = conn
         .call(|conn| {
             let q = "SELECT * FROM movielist ORDER BY dateadded DESC";
             let mut stmt = conn.prepare(q)?;
             let movies = stmt
                 .query_map([], |row| {
-                    let genres: Vec<String> = row
-                        .get::<usize, String>(2)?
-                        .split(",")
-                        .map(|s| s.to_string())
-                        .collect();
-                    let poster = row.get::<usize, String>(9)?;
-                    let poster = if !poster.is_empty() {
-                        Some(poster)
-                    } else {
-                        None
-                    };
                     Ok(MovieListItem {
                         movieid: row.get(0)?,
                         title: row.get(1)?,
-                        genre: genres,
+                        genre: {
+                            let genre_str: String = row.get(2)?;
+                            genre_str.split(",").map(String::from).collect()
+                        },
                         year: row.get(3)?,
                         rating: row.get(4)?,
                         playcount: row.get(5)?,
@@ -145,16 +303,31 @@ async fn get_movie_list(conn: &Connection) -> Result<Event, tokio_rusqlite::Erro
                         dateadded: row.get(7)?,
                         premiered: row.get(8)?,
                         art: Art {
-                            poster,
+                            poster: {
+                                let poster_str: String = row.get(9)?;
+                                if poster_str.is_empty() {
+                                    None
+                                } else {
+                                    Some(poster_str)
+                                }
+                            },
                             thumb: None,
                         },
                     })
                 })?
-                .collect::<Result<Vec<MovieListItem>, rusqlite::Error>>();
+                .collect::<Result<Vec<MovieListItem>, rusqlite::Error>>()?;
+
             Ok::<_, tokio_rusqlite::Error>(movies)
         })
-        .await??;
-    Ok(Event::UpdateMovieList(movies))
+        .await;
+
+    match movies_result {
+        Ok(movies) => Ok(Event::UpdateMovieList(movies)),
+        Err(err) => {
+            dbg!(&err);
+            Err(err) // Return the error
+        }
+    }
 }
 
 async fn get_server_list(conn: &Connection) -> Result<Event, tokio_rusqlite::Error> {
@@ -186,35 +359,188 @@ async fn insert_movies(
     conn: &Connection,
     movies: Vec<MovieListItem>,
 ) -> Result<Event, tokio_rusqlite::Error> {
-    let movies = conn.call(|conn| {
-        // !TODO! 
-        // This just clears the whole table and re-inserts all entries currently
-        // it could be done much more efficiently I think?
+    // This method does NOT clear old db entries
+    // so there may be stale movie references in the DB
+    // can likely make a 'clean db' function that takes only movieid list
+    let movies_result = conn
+        .call(|conn| {
+            let t = conn.transaction()?;
 
-        let t = conn.transaction()?;
-        t.execute("DELETE FROM movielist", [])?;
-        for movie in movies {
-            t.execute("INSERT INTO movielist VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10
-            )", params![
-                movie.movieid,
-                movie.title,
-                movie.genre.join(","),
-                movie.year,
-                movie.rating,
-                movie.playcount,
-                movie.file,
-                movie.dateadded,
-                movie.premiered,
-                movie.art.poster.unwrap_or("".to_string()),
-             ])?;
-        }
+            let mut stmt = t.prepare(
+                "INSERT OR REPLACE INTO movielist (
+                    movieid, title, genre, year, rating, playcount, file, dateadded, premiered, art
+                ) VALUES (
+                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10
+                )",
+            )?;
 
-        t.commit()?;
-        Ok::<_, tokio_rusqlite::Error>}(())
-    ).await;
+            for movie in movies {
+                stmt.execute(params![
+                    movie.movieid,
+                    movie.title,
+                    movie.genre.join(","),
+                    movie.year,
+                    movie.rating,
+                    movie.playcount,
+                    movie.file,
+                    movie.dateadded,
+                    movie.premiered,
+                    movie.art.poster.unwrap_or("".to_string()),
+                ])?;
+            }
+            drop(stmt);
 
-    dbg!(movies.err());
+            t.commit()?;
+            Ok::<_, tokio_rusqlite::Error>(())
+        })
+        .await;
+
+    if let Err(err) = movies_result {
+        dbg!(&err);
+        return Err(err);
+    }
+
+    Ok(Event::None)
+}
+
+async fn insert_tvshows(
+    conn: &Connection,
+    tvshows: Vec<TVShowListItem>,
+) -> Result<Event, tokio_rusqlite::Error> {
+    // This method does NOT clear old db entries
+    // so there may be stale references in the DB
+    let shows_result = conn
+        .call(|conn| {
+            let t = conn.transaction()?;
+
+            let mut stmt = t.prepare(
+                "INSERT OR REPLACE INTO tvshowlist (
+                    tvshowid, title, year, season, episode, file, dateadded, genre, rating, playcount, art
+                ) VALUES (
+                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11
+                )",
+            )?;
+
+            for tv_show in tvshows {
+                stmt.execute(params![
+                    tv_show.tvshowid,
+                    tv_show.title,
+                    tv_show.year,
+                    tv_show.season,
+                    tv_show.episode,
+                    tv_show.file,
+                    tv_show.dateadded,
+                    tv_show.genre.join(","),
+                    tv_show.rating,
+                    tv_show.playcount,
+                    tv_show.art.poster.unwrap_or("".to_string()),
+                ])?;
+            }
+            drop(stmt);
+
+            t.commit()?;
+            Ok::<_, tokio_rusqlite::Error>(())
+        })
+        .await;
+
+    if let Err(err) = shows_result {
+        dbg!(&err);
+        return Err(err);
+    }
+
+    Ok(Event::None)
+}
+
+async fn insert_tvseasons(
+    conn: &Connection,
+    seasons: Vec<TVSeasonListItem>,
+) -> Result<Event, tokio_rusqlite::Error> {
+    // This method does NOT clear old db entries
+    // so there may be stale references in the DB
+    let shows_result = conn
+        .call(|conn| {
+            let t = conn.transaction()?;
+
+            let mut stmt = t.prepare(
+                "INSERT OR REPLACE INTO tvseasonlist (
+                    seasonid, tvshowid, title, season, episode
+                ) VALUES (
+                    ?1, ?2, ?3, ?4, ?5
+                )",
+            )?;
+
+            for season in seasons {
+                stmt.execute(params![
+                    season.seasonid,
+                    season.tvshowid,
+                    season.title,
+                    season.season,
+                    season.episode,
+                ])?;
+            }
+            drop(stmt);
+
+            t.commit()?;
+            Ok::<_, tokio_rusqlite::Error>(())
+        })
+        .await;
+
+    if let Err(err) = shows_result {
+        dbg!(&err);
+        return Err(err);
+    }
+
+    Ok(Event::None)
+}
+
+async fn insert_tvepisodes(
+    conn: &Connection,
+    episodes: Vec<TVEpisodeListItem>,
+) -> Result<Event, tokio_rusqlite::Error> {
+    // This method does NOT clear old db entries
+    // so there may be stale references in the DB
+    let shows_result = conn
+        .call(|conn| {
+            let t = conn.transaction()?;
+
+            let mut stmt = t.prepare(
+                "INSERT OR REPLACE INTO tvepisodelist (
+                    episodeid, tvshowid, title, season, episode, file, dateadded, rating, 
+                    firstaired, playcount, art, specialsortseason, specialsortepisode
+                ) VALUES (
+                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13
+                )",
+            )?;
+
+            for episode in episodes {
+                stmt.execute(params![
+                    episode.episodeid,
+                    episode.tvshowid,
+                    episode.title,
+                    episode.season,
+                    episode.episode,
+                    episode.file,
+                    episode.dateadded,
+                    episode.rating,
+                    episode.firstaired,
+                    episode.playcount,
+                    episode.art.thumb.unwrap_or("".to_string()),
+                    episode.specialsortseason,
+                    episode.specialsortepisode,
+                ])?;
+            }
+            drop(stmt);
+
+            t.commit()?;
+            Ok::<_, tokio_rusqlite::Error>(())
+        })
+        .await;
+
+    if let Err(err) = shows_result {
+        dbg!(&err);
+        return Err(err);
+    }
+
     Ok(Event::None)
 }
 
@@ -275,6 +601,65 @@ async fn create_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
     // Due to websocket response size limits I have to keep the movielist to minimal fields
     // I can create a moviedetails db with the same `movieid` then use JOIN
 
+    let tvshowlist = conn.call(|conn| {conn.execute(
+        "CREATE TABLE IF NOT EXISTS 'tvshowlist' (
+            tvshowid INTEGER PRIMARY KEY ON CONFLICT REPLACE,
+            title TEXT,
+            year INTEGER,
+            season INTEGER,
+            episode INTEGER,
+            file TEXT,
+            dateadded TEXT,
+            genre TEXT,
+            rating REAL,
+            playcount NUMBER,
+            art TEXT
+        )",
+        [],
+    )?;
+    Ok::<_, tokio_rusqlite::Error>}(())
+    ).await;
+
+    dbg!(tvshowlist.err());
+
+    let tvseasonlist = conn.call(|conn| {conn.execute(
+        "CREATE TABLE IF NOT EXISTS 'tvseasonlist' (
+            seasonid INTEGER PRIMARY KEY ON CONFLICT REPLACE,
+            tvshowid INTEGER,
+            title TEXT,
+            season INTEGER,
+            episode INTEGER
+        )",
+        [],
+    )?;
+    Ok::<_, tokio_rusqlite::Error>}(())
+    ).await;
+
+    dbg!(tvseasonlist.err());
+
+    let tvepisodelist = conn.call(|conn| {conn.execute(
+        "CREATE TABLE IF NOT EXISTS 'tvepisodelist' (
+            episodeid INTEGER PRIMARY KEY ON CONFLICT REPLACE,
+            tvshowid INTEGER,
+            title TEXT,
+            season INTEGER,
+            episode INTEGER,
+            file TEXT,
+            dateadded TEXT,
+            rating REAL,
+            firstaired TEXT,
+            playcount NUMBER,
+            art TEXT,
+            specialsortseason INTEGER,
+            specialsortepisode INTEGER
+        )",
+        [],
+    )?;
+    Ok::<_, tokio_rusqlite::Error>}(())
+    ).await;
+
+    dbg!(tvepisodelist.err());
+
     Ok(())
 }
 
@@ -285,4 +670,7 @@ pub enum Event {
     None,
     UpdateServers(Vec<KodiServer>),
     UpdateMovieList(Vec<MovieListItem>),
+    UpdateTVShowList(Vec<TVShowListItem>),
+    UpdateTVSeasonList(TVShowListItem, Vec<TVSeasonListItem>),
+    UpdateEpisodeList(Vec<TVEpisodeListItem>),
 }

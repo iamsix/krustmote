@@ -417,8 +417,9 @@ async fn handle_kodi_command(
         }
 
         // Testing...
-        // TODO: Decide if I want this to be able to directly send data to DB?
-        //       can do so by cloning the SqlQonnection
+        // Likely going to leave this as-is for now.
+        //   Might change db/api both to be under something like a 'data layer'
+        //   then the front end can just ask for data and module can figure it out
         KodiCommand::VideoLibraryGetMovies => {
             // I tested tokio::spawn here but kodi itself delays other requests while this runs
             //   (even from other connections/clients/etc)
@@ -439,8 +440,11 @@ async fn handle_kodi_command(
 
         // checking the data here...
         KodiCommand::VideoLibraryGetTVShows => {
-            // Might make this command do multiple queries to get all tv/season/ep data
+            // for now make this command do multiple queries to get all tv/season/ep data
             // then put it all together and update the DB with a single object or giant array
+            // this is definitely NOT ideal.
+            // It takes a very long time for lots of episodes and hangs.
+            // if we do a data layer thing we can probably dynamically pull this?
             let response: Value = client
                 .request(
                     "VideoLibrary.GetTVShows",
@@ -452,15 +456,53 @@ async fn handle_kodi_command(
                 .expect("TVShowListItem should deserialize");
             dbg!(&shows[0]);
 
-            Ok(Event::None)
+            let response: Value = client
+                .request(
+                    "VideoLibrary.GetSeasons",
+                    rpc_obj_params!("properties" = TV_SEASON_PROPS),
+                )
+                .await?;
+
+            let seasons = <Vec<TVSeasonListItem> as Deserialize>::deserialize(&response["seasons"])
+                .expect("TVShowListItem should deserialize");
+
+            dbg!("Start episodes query");
+            let mut episodes = Vec::new();
+            for show in &shows {
+                let response: Value = client
+                    .request(
+                        "VideoLibrary.GetEpisodes",
+                        rpc_obj_params!(
+                            "tvshowid" = show.tvshowid,
+                            "properties" = MINIMAL_EP_PROPS
+                        ),
+                    )
+                    .await?;
+
+                let mut eps =
+                    <Vec<TVEpisodeListItem> as Deserialize>::deserialize(&response["episodes"])
+                        .expect("TVShowListItem should deserialize");
+
+                episodes.append(&mut eps);
+            }
+            dbg!("End episodes query");
+
+            Ok(Event::UpdateTVList(shows, seasons, episodes))
         }
 
         KodiCommand::VideoLibraryGetTVSeasons => {
+            // tvshowid is an optional req param so I can theoretically
+            //   req all seasons then look up the tvshowid in the props
             let response: Value = client
-                .request("VideoLibrary.GetSeasons", rpc_obj_params!("tvshowid" = 1))
+                .request(
+                    "VideoLibrary.GetSeasons",
+                    rpc_obj_params!("properties" = TV_SEASON_PROPS),
+                )
                 .await?;
 
-            dbg!(response);
+            let seasons = <Vec<TVSeasonListItem> as Deserialize>::deserialize(&response["seasons"])
+                .expect("TVShowListItem should deserialize");
+            dbg!(&seasons[0]);
 
             Ok(Event::None)
         }
@@ -471,11 +513,14 @@ async fn handle_kodi_command(
             let response: Value = client
                 .request(
                     "VideoLibrary.GetEpisodes",
-                    rpc_obj_params!("tvshowid" = 1, "properties" = MINIMAL_TV_PROPS),
+                    rpc_obj_params!("tvshowid" = 1, "properties" = MINIMAL_EP_PROPS),
                 )
                 .await?;
 
-            dbg!(response);
+            let episodes =
+                <Vec<TVEpisodeListItem> as Deserialize>::deserialize(&response["episodes"])
+                    .expect("TVShowListItem should deserialize");
+            dbg!(&episodes[0]);
 
             Ok(Event::None)
         }
@@ -586,4 +631,9 @@ pub enum Event {
     UpdatePlayingItem(PlayingItem), // Might change to Option
     InputRequested(String),
     UpdateMovieList(Vec<MovieListItem>),
+    UpdateTVList(
+        Vec<TVShowListItem>,
+        Vec<TVSeasonListItem>,
+        Vec<TVEpisodeListItem>,
+    ),
 }

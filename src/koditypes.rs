@@ -2,7 +2,12 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::sync::{Arc, OnceLock};
 
+use crate::db::SqlCommand;
+
 // TODO: Investigate Cow for these Strings
+
+// TODO: Massively refactor this file.
+//       Lots of duplicated code etc.
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum KodiCommand {
@@ -591,6 +596,206 @@ impl PlayingItem {
 //     "uniqueid",
 // ];
 
+pub const MINIMAL_TV_PROPS: [&'static str; 10] = [
+    "title",
+    "year",
+    "file",    // just returns the folder, not sure I even need this.
+    "season",  //no of seasons
+    "episode", // count of them. watchedepisodes also a thing
+    "dateadded",
+    "genre",
+    "rating",
+    // "premiered",
+    "playcount",
+    "art",
+    // sorttitle //? might be useless?
+];
+
+pub const MINIMAL_EP_PROPS: [&'static str; 12] = [
+    "title",
+    "tvshowid",
+    "file",
+    "season",  // season no
+    "episode", // ep no
+    "dateadded",
+    "rating",
+    "firstaired",
+    "playcount",
+    "art",
+    "specialsortseason",
+    "specialsortepisode",
+    // "showtitle", // ?? not sure if I want/need
+];
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct TVShowListItem {
+    pub tvshowid: u32,
+    pub title: String,
+    pub year: u16,
+    pub season: u16,
+    pub episode: u16,
+    pub file: String,
+    pub dateadded: String,
+    pub genre: Vec<String>,
+    pub rating: f64,
+    // pub premiered: String,
+    pub playcount: i16,
+    pub art: Art,
+}
+
+pub const TV_SEASON_PROPS: [&'static str; 4] = ["tvshowid", "title", "season", "episode"];
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct TVSeasonListItem {
+    pub seasonid: u32,
+    pub tvshowid: u32,
+    pub title: String,
+    // i16 so I can set to -1 for "all seasons"
+    pub season: i16,
+    pub episode: u16,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct TVEpisodeListItem {
+    pub episodeid: u32,
+    pub tvshowid: u32,
+    pub title: String,
+    pub season: u16,
+    pub episode: u16,
+    pub file: String,
+    pub dateadded: String,
+    pub rating: f64,
+    pub firstaired: String,
+    pub playcount: i16,
+    pub art: Art,
+    pub specialsortseason: i16, // annoyingly these are -1 for non-special
+    pub specialsortepisode: i16,
+    // showtitle? - really nly for the breadcrumb thing
+}
+
+impl IntoListData for TVShowListItem {
+    fn into_listdata(&self) -> crate::ListData {
+        // This is where it gets complicated.
+        // I need to do a DBReq here to make it show the seasons - supply tvshow
+        let on_click = crate::Message::DbQuery(SqlCommand::GetTVSeasons(self.clone()));
+
+        let bottom_left = Some(format!("Rating: {:.1}", self.rating));
+        crate::ListData {
+            label: self.title.clone(),
+            on_click,
+            play_count: Some(self.playcount),
+            bottom_left,
+            bottom_right: Some(self.genre.join(", ")),
+            image: Arc::new(OnceLock::new()),
+        }
+    }
+
+    fn get_art_data(&self, http_url: &String) -> Pic {
+        if self.art.poster.is_some() {
+            let poster = self.art.poster.as_ref().unwrap();
+            let poster = urlencoding::encode(poster.as_str());
+            Pic {
+                url: format!("{}/image/{}", http_url, poster),
+                w: 80,
+                h: 120,
+            }
+        } else {
+            Pic {
+                url: "".to_string(),
+                h: 0,
+                w: 0,
+            }
+        }
+    }
+
+    fn label_contains(&self, find: &String) -> bool {
+        // Can also search originaltitle etc with this.
+        self.title.to_lowercase().contains(&find.to_lowercase())
+    }
+}
+
+impl IntoListData for TVSeasonListItem {
+    fn into_listdata(&self) -> crate::ListData {
+        // This is where it gets complicated.
+        // I need to do a DBReq here to make it show the episodes with the tvshowid, season
+
+        let on_click =
+            crate::Message::DbQuery(SqlCommand::GetTVEpisodes(self.tvshowid, self.season));
+
+        crate::ListData {
+            label: self.title.clone(),
+            on_click,
+            play_count: None,
+            bottom_left: None,
+            bottom_right: Some(format!("{} Episodes", self.episode)),
+            image: Arc::new(OnceLock::new()),
+        }
+    }
+
+    fn get_art_data(&self, http_url: &String) -> Pic {
+        let poster = urlencoding::encode("image://DefaultFolder.png/");
+        Pic {
+            url: format!("{}/image/{}", http_url, poster),
+            w: 80,
+            h: 120,
+        }
+    }
+
+    fn label_contains(&self, find: &String) -> bool {
+        // Can also search originaltitle etc with this.
+        self.title.to_lowercase().contains(&find.to_lowercase())
+    }
+}
+
+impl IntoListData for TVEpisodeListItem {
+    fn into_listdata(&self) -> crate::ListData {
+        let on_click = crate::Message::KodiReq(KodiCommand::PlayerOpen(self.file.clone()));
+
+        // There's likely a better approach to parsing this.
+        let pos = self.file.chars().rev().position(|c| c == '/');
+        let filename = if let Some(pos) = pos {
+            let position = self.file.len() - pos;
+            &self.file[position..]
+        } else {
+            ""
+        };
+        let bottom_left = Some(format!("Rating: {:.1} - {}", self.rating, filename));
+
+        let label = format!("S{:02}E{:02} - {}", self.season, self.episode, self.title,);
+
+        crate::ListData {
+            label,
+            on_click,
+            play_count: Some(self.playcount),
+            bottom_left,
+            bottom_right: Some(self.firstaired.clone()),
+            image: Arc::new(OnceLock::new()),
+        }
+    }
+
+    fn get_art_data(&self, http_url: &String) -> Pic {
+        if self.art.thumb.is_some() {
+            let thumb = self.art.thumb.as_ref().unwrap();
+            let thumb = urlencoding::encode(thumb.as_str());
+            Pic {
+                url: format!("{}/image/{}", http_url, thumb),
+                w: 192,
+                h: 108,
+            }
+        } else {
+            Pic {
+                url: "".to_string(),
+                h: 0,
+                w: 0,
+            }
+        }
+    }
+
+    fn label_contains(&self, find: &String) -> bool {
+        // Can also search originaltitle etc with this.
+        self.title.to_lowercase().contains(&find.to_lowercase())
+    }
+}
 // should add originaltitle for searching, and resume?
 //   runtime might also be nice for list display
 pub const MINIMAL_MOVIE_PROPS: [&'static str; 9] = [
@@ -605,20 +810,6 @@ pub const MINIMAL_MOVIE_PROPS: [&'static str; 9] = [
     "art",
 ];
 
-pub const MINIMAL_TV_PROPS: [&'static str; 8] = [
-    "title",
-    "file",   // just returns the folder, not sure I even need this.
-    "season", //no of seasons
-    // episode, // likely a count of them when full show? watchedepisodes also a thing
-    "dateadded",
-    "genre",
-    "rating",
-    // "premiered",
-    "playcount", // not sure if it works?
-    "art",
-    // sorttitle //? might be useless?
-];
-
 #[derive(Deserialize, Debug, Clone)]
 pub struct MovieListItem {
     pub movieid: u32,
@@ -629,20 +820,6 @@ pub struct MovieListItem {
     pub genre: Vec<String>,
     pub rating: f64,
     pub premiered: String,
-    pub playcount: i16,
-    pub art: Art,
-}
-
-#[derive(Deserialize, Debug, Clone)]
-pub struct TVShowListItem {
-    pub tvshowid: u32,
-    pub title: String,
-    pub season: u16,
-    pub file: String,
-    pub dateadded: String,
-    pub genre: Vec<String>,
-    pub rating: f64,
-    // pub premiered: String,
     pub playcount: i16,
     pub art: Art,
 }
