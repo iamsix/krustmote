@@ -37,35 +37,19 @@ fn main() -> iced::Result {
     //     std::fs::create_dir(dir.as_path()).expect("expected permissions to create data folder");
     // }
 
-    // TODO: Move this somewhere else.
-    let img = imagelib::load_from_memory_with_format(
-        include_bytes!("../icon.png"),
-        imagelib::ImageFormat::Png,
-    );
-
-    let window = match img {
-        Ok(img) => {
-            let icon = img.as_rgba8().unwrap();
+    let window =
+        window::icon::from_file("./icon.png").map_or(window::Settings::default(), |icon| {
             window::Settings {
-                icon: window::icon::from_rgba(icon.to_vec(), icon.width(), icon.height()).ok(),
+                icon: Some(icon),
                 ..Default::default()
             }
-        }
-        Err(_) => window::Settings {
-            ..Default::default()
-        },
-    };
+        });
 
     let _ = BLANK_IMAGE.set(image::Handle::from_rgba(80, 120, vec![0; 38_400]));
     iced::application(Krustmote::title, Krustmote::update, Krustmote::view)
         .subscription(Krustmote::subscription)
         .window(window)
         .run_with(Krustmote::new)
-
-    // Krustmote::run(Settings {
-    //     // window,
-    //     ..Settings::default()
-    // })
 }
 
 struct Krustmote {
@@ -170,11 +154,6 @@ enum DbState {
 }
 
 impl Krustmote {
-    // type Message = Message;
-    // type Theme = Theme;
-    // type Executor = executor::Default;
-    // type Flags = ();
-
     fn new() -> (Self, Command<Message>) {
         let kodi_status = KodiStatus {
             server: None,

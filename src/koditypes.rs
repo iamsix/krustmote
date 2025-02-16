@@ -106,7 +106,7 @@ pub struct PlayerProps {
     #[serde(deserialize_with = "treat_error_as_none")]
     pub currentaudiostream: Option<AudioStream>,
     pub audiostreams: Vec<AudioStream>,
-    pub canseek: bool,
+    // pub canseek: bool,
     #[serde(deserialize_with = "treat_error_as_none")]
     pub currentsubtitle: Option<Subtitle>,
     pub subtitles: Vec<Subtitle>,
@@ -345,7 +345,7 @@ pub struct DirList {
     pub episode: Option<i16>,
     pub playcount: Option<i16>,
     #[serde(default)]
-    pub resume: Option<ResumePoint>,
+    // pub resume: Option<ResumePoint>,
     pub year: Option<u16>,
     #[serde(rename = "type")]
     pub type_: VideoType,
@@ -522,7 +522,8 @@ pub struct PlayingItem {
     // track: i16,
     // cast: Vec<Cast>
     // director: Vec<String>
-    pub file: String,
+    #[serde(rename = "file")]
+    pub _file: String, // TODO!? Not actually sure what to do with it...
     // firstaired: String, //Could convert this to date myself?
     // playcount: u8,
     // plot: String,
@@ -920,11 +921,11 @@ pub struct Cast {
 //     pub imdb: String,
 // }
 
-#[derive(Deserialize, Debug, Clone, Default)]
-pub struct ResumePoint {
-    pub position: f64, // Position of resume in seconds
-    pub total: f64,    // total runtime again for some reason
-}
+// #[derive(Deserialize, Debug, Clone, Default)]
+// pub struct ResumePoint {
+//     pub position: f64, // Position of resume in seconds
+//     pub total: f64,    // total runtime again for some reason
+// }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct StreamDetails {
