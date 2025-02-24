@@ -14,7 +14,7 @@ use super::BLANK_IMAGE;
 use super::ITEM_HEIGHT;
 use super::{ListData, Message, Modals, State};
 
-use crate::db;
+use crate::data;
 use crate::icons;
 use crate::koditypes::*;
 use crate::themes;
@@ -248,6 +248,9 @@ pub(crate) fn file_list<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> {
 
     let top_space = offset * ITEM_HEIGHT;
     virtual_list.push(Space::new(10, top_space as f32).into());
+    if krustmote.item_list.virtual_list.is_empty() {
+        virtual_list.push(text("No Items").center().width(Length::Fill).into());
+    }
 
     let files = krustmote
         .item_list
@@ -382,7 +385,7 @@ pub(crate) fn left_menu<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> {
             if let crate::State::Connected(..) = krustmote.state {
                 container(
                     button(row![icons::folder(), "Files"].align_y(iced::Alignment::Center))
-                        .on_press(Message::KodiReq(KodiCommand::GetSources(MediaType::Video)))
+                        .on_press(Message::GetData(data::Get::Sources))
                         .width(Length::Fill)
                         .style(themes::bare_button),
                 )
@@ -391,11 +394,11 @@ pub(crate) fn left_menu<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> {
                 container("")
             },
             button(row![icons::movie(), "Movies"].align_y(iced::Alignment::Center))
-                .on_press(Message::DbQuery(db::SqlCommand::GetMovieList))
+                .on_press(Message::GetData(data::Get::Movies))
                 .width(Length::Fill)
                 .style(themes::bare_button),
             button(row![icons::tv(), "TV"].align_y(iced::Alignment::Center))
-                .on_press(Message::DbQuery(db::SqlCommand::GetTVShowList))
+                .on_press(Message::GetData(data::Get::TVShows))
                 .width(Length::Fill)
                 .style(themes::bare_button),
             button(row![icons::settings(), "Settings"].align_y(iced::Alignment::Center))
@@ -420,10 +423,10 @@ pub(crate) fn remote<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
         column![
             // seems like I could template these buttons in some way
             button(icons::bug_report()).on_press(Message::KodiReq(KodiCommand::Test)),
-            button("Movies-test").on_press(Message::KodiReq(KodiCommand::VideoLibraryGetMovies)),
-            button("TV-test").on_press(Message::KodiReq(KodiCommand::VideoLibraryGetTVShows)),
-            button("Sason-test").on_press(Message::KodiReq(KodiCommand::VideoLibraryGetTVSeasons)),
-            button("Eps-test").on_press(Message::KodiReq(KodiCommand::VideoLibraryGetTVEpisodes)),
+            // button("Movies-test").on_press(Message::KodiReq(KodiCommand::VideoLibraryGetMovies)),
+            // button("TV-test").on_press(Message::KodiReq(KodiCommand::VideoLibraryGetTVShows)),
+            // button("Sason-test").on_press(Message::KodiReq(KodiCommand::VideoLibraryGetTVSeasons)),
+            // button("Eps-test").on_press(Message::KodiReq(KodiCommand::VideoLibraryGetTVEpisodes)),
             button("playerid-test").on_press(Message::KodiReq(KodiCommand::PlayerGetActivePlayers)),
             button("props-test").on_press(Message::KodiReq(KodiCommand::PlayerGetProperties)),
             button("item-test").on_press(Message::KodiReq(KodiCommand::PlayerGetPlayingItemDebug(

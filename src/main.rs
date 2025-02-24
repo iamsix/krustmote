@@ -1,9 +1,8 @@
-use iced::font;
 use iced::widget::scrollable::Id;
 use iced::widget::{center, column, container, image, mouse_area, row, scrollable, stack};
 use iced::widget::{opaque, text_input};
 
-use iced::{event, window, Element, Event, Length, Subscription, Task as Command};
+use iced::{event, font, window, Element, Event, Length, Subscription, Task as Command};
 
 use ::image as imagelib;
 use fxhash;
@@ -18,6 +17,7 @@ use std::sync::{Arc, OnceLock};
 use tokio;
 
 mod client;
+mod data;
 mod db;
 mod icons;
 mod koditypes;
@@ -28,6 +28,8 @@ mod uiparts;
 use koditypes::*;
 
 static SEM: Semaphore = Semaphore::const_new(10);
+const ITEM_HEIGHT: u32 = 55;
+static BLANK_IMAGE: OnceLock<image::Handle> = OnceLock::new();
 
 fn main() -> iced::Result {
     // let dir = dirs_next::data_dir()
@@ -54,7 +56,6 @@ fn main() -> iced::Result {
 
 struct Krustmote {
     state: State,
-    db_state: DbState,
     menu_width: u16,
     kodi_status: KodiStatus,
     item_list: ItemList,
@@ -64,11 +65,11 @@ struct Krustmote {
     modal: Modals,
 }
 
+#[derive(Default)]
 struct ItemList {
-    raw_data: Vec<Box<dyn IntoListData>>,
+    raw_data: Vec<Box<dyn IntoListData + Send>>,
     virtual_list: IndexMap<usize, ListData>,
     list_title: String,
-    // TODO: name each previous crumb.
     breadcrumb: Vec<Message>,
     filter: String,
     filtered_count: usize,
@@ -92,11 +93,9 @@ enum ContentArea {
     _ItemInfo,
 }
 
-const ITEM_HEIGHT: u32 = 55;
-static BLANK_IMAGE: OnceLock<image::Handle> = OnceLock::new();
-
 // TODO: consider directly using PlayerProps and PlayingItem
 //       this basically just re-makes those structs anyway...
+#[derive(Debug, Clone, Default)]
 struct KodiStatus {
     server: Option<Arc<KodiServer>>,
     active_player_id: Option<u8>,
@@ -121,10 +120,9 @@ pub struct ListData {
 enum Message {
     ToggleLeftMenu,
     UpBreadCrumb,
-    ServerEvent(client::Event),
     KodiReq(KodiCommand),
-    DbEvent(db::Event),
-    DbQuery(db::SqlCommand),
+    DataEvent(data::DataEvent),
+    GetData(data::Get),
     Settings(settingsui::Message),
     SettingsEvent(settingsui::Event),
     ShowSettings,
@@ -145,43 +143,18 @@ enum Message {
 #[derive(Debug)]
 enum State {
     Disconnected,
-    Connected(client::Connection),
-}
-
-enum DbState {
-    Closed,
-    Open(db::SqlConnection),
+    Offline(data::Connection),
+    Connected(data::Connection, client::Connection),
 }
 
 impl Krustmote {
     fn new() -> (Self, Command<Message>) {
-        let kodi_status = KodiStatus {
-            server: None,
-            active_player_id: None,
-            muted: false,
-            playing_title: "".to_string(),
-            player_props: Default::default(),
-            // playing_item: Default::default(),
-        };
-
-        let item_list = ItemList {
-            // data: Vec::new(),
-            raw_data: Vec::new(),
-            virtual_list: IndexMap::new(),
-            list_title: String::from(""),
-            breadcrumb: Vec::new(),
-            start_offset: 0,
-            visible_count: 0,
-            filter: String::from(""),
-            filtered_count: 0,
-        };
         (
             Self {
                 state: State::Disconnected,
-                db_state: DbState::Closed,
                 menu_width: 120,
-                kodi_status,
-                item_list,
+                kodi_status: Default::default(),
+                item_list: Default::default(),
                 slider_grabbed: false,
                 send_text: String::from(""),
                 content_area: ContentArea::Files,
@@ -207,8 +180,8 @@ impl Krustmote {
 
             Message::SettingsEvent(event) => match event {
                 settingsui::Event::AddServer(srv) => {
-                    let q = db::SqlCommand::AddOrEditServer(srv);
-                    return Command::perform(async { q }, move |q| Message::DbQuery(q));
+                    let q = data::Get::AddOrEditServer(srv);
+                    return Command::perform(async { q }, move |q| Message::GetData(q));
                 }
                 settingsui::Event::Cancel => {
                     self.content_area = ContentArea::Files;
@@ -339,20 +312,23 @@ impl Krustmote {
                 return Command::perform(async { cmd }, move |c| Message::KodiReq(c));
             }
 
-            Message::DbEvent(event) => {
+            Message::DataEvent(event) => {
+                // dbg!(&event);
                 match event {
-                    db::Event::Closed => {}
+                    data::DataEvent::Connected(connection) => {
+                        self.kodi_status.active_player_id = None;
+                        self.state = State::Offline(connection);
 
-                    db::Event::Opened(conn) => {
-                        self.db_state = DbState::Open(conn);
-
-                        // upon open we read config and servers
                         return Command::perform(async {}, |_| {
-                            Message::DbQuery(db::SqlCommand::GetServers)
+                            Message::GetData(data::Get::KodiServers)
                         });
                     }
 
-                    db::Event::UpdateServers(servers) => {
+                    data::DataEvent::Online(conn, kodiconn) => {
+                        self.state = State::Connected(conn, kodiconn);
+                    }
+
+                    data::DataEvent::Servers(servers) => {
                         dbg!(&servers);
                         if servers.len() == 0 {
                             let new_server = settingsui::Settings::new();
@@ -360,32 +336,18 @@ impl Krustmote {
                         } else {
                             // We currently only care about 1 server until we
                             // have the settings table to get the selected server
-                            let srv = Arc::new(servers[0].clone());
-                            self.kodi_status.server = Some(Arc::clone(&srv));
+                            self.kodi_status.server = Some(Arc::new(servers[0].clone()));
                             self.content_area = ContentArea::Files;
-                            // if matches!(self.state, State::Disconnected) {
-                            self.kodi_status.active_player_id = None;
-                            let cmd = Message::KodiReq(KodiCommand::ChangeServer(Arc::clone(&srv)));
-                            return Command::perform(async { cmd }, move |c| c);
-                            // }
                         }
                     }
 
-                    db::Event::UpdateMovieList(movies) => {
-                        let mut commands = vec![scrollable::snap_to(
-                            Id::new("files"),
-                            scrollable::RelativeOffset { x: 0.0, y: 0.0 },
-                        )];
-                        if movies.is_empty() {
-                            commands.push(Command::perform(async {}, move |_| {
-                                Message::KodiReq(KodiCommand::VideoLibraryGetMovies)
-                            }));
+                    data::DataEvent::ListData { title, data } => {
+                        if data.is_empty() {
+                            dbg!("Empty list:", &title);
                         }
 
-                        self.item_list.list_title = "Movies".to_string();
-                        self.item_list.breadcrumb.clear();
-                        self.item_list.raw_data =
-                            movies.into_iter().map(|v| Box::new(v) as _).collect();
+                        self.item_list.list_title = title;
+                        self.item_list.raw_data = data;
 
                         self.item_list.filter = "".to_string();
                         self.item_list.start_offset = 0;
@@ -394,158 +356,61 @@ impl Krustmote {
                         self.update_virtual_list();
 
                         self.content_area = ContentArea::Files;
-                        return Command::batch(commands);
-                    }
 
-                    db::Event::UpdateTVShowList(shows) => {
-                        let mut commands = vec![scrollable::snap_to(
+                        return scrollable::snap_to(
                             Id::new("files"),
                             scrollable::RelativeOffset { x: 0.0, y: 0.0 },
-                        )];
-                        if shows.is_empty() {
-                            commands.push(Command::perform(async {}, move |_| {
-                                Message::KodiReq(KodiCommand::VideoLibraryGetTVShows)
-                            }));
-                        }
-
-                        self.item_list.list_title = "TV Shows".to_string();
-                        self.item_list.raw_data =
-                            shows.into_iter().map(|v| Box::new(v) as _).collect();
-
-                        self.item_list.filter = "".to_string();
-                        self.item_list.start_offset = 0;
-
-                        self.item_list.virtual_list = IndexMap::new();
-                        self.update_virtual_list();
-
-                        self.content_area = ContentArea::Files;
-                        return Command::batch(commands);
-                    }
-
-                    db::Event::UpdateTVSeasonList(tvshow, mut seasons) => {
-                        let commands = vec![scrollable::snap_to(
-                            Id::new("files"),
-                            scrollable::RelativeOffset { x: 0.0, y: 0.0 },
-                        )];
-                        if seasons.is_empty() {
-                            dbg!(tvshow);
-                            panic!("Season list for show is empty")
-                        }
-
-                        let tvshowid = seasons[0].tvshowid;
-                        seasons.insert(
-                            0,
-                            TVSeasonListItem {
-                                seasonid: 0,
-                                tvshowid,
-                                title: "All Seasons".to_string(),
-                                season: -1,
-                                episode: tvshow.episode,
-                            },
                         );
-                        self.item_list.list_title = tvshow.title;
-                        self.item_list.raw_data =
-                            seasons.into_iter().map(|v| Box::new(v) as _).collect();
-
-                        self.item_list.filter = "".to_string();
-                        self.item_list.start_offset = 0;
-
-                        self.item_list.virtual_list = IndexMap::new();
-                        self.update_virtual_list();
-
-                        self.content_area = ContentArea::Files;
-                        return Command::batch(commands);
                     }
 
-                    db::Event::UpdateEpisodeList(showtitle, episodes) => {
-                        let commands = vec![scrollable::snap_to(
-                            Id::new("files"),
-                            scrollable::RelativeOffset { x: 0.0, y: 0.0 },
-                        )];
-                        if episodes.is_empty() {
-                            panic!("Episode list for show is empty")
+                    data::DataEvent::KodiStatus(kodistatus) => {
+                        if !self.slider_grabbed {
+                            self.kodi_status = kodistatus;
+                        } else {
+                            let selected_time = self.kodi_status.player_props.time.clone();
+                            self.kodi_status = kodistatus;
+                            self.kodi_status.player_props.time = selected_time;
                         }
-
-                        // the wrong way to do season # but ok for now
-                        self.item_list.list_title =
-                            format!("{} > Season {}", showtitle, &episodes[0].season);
-                        self.item_list.raw_data =
-                            episodes.into_iter().map(|v| Box::new(v) as _).collect();
-
-                        self.item_list.filter = "".to_string();
-                        self.item_list.start_offset = 0;
-
-                        self.item_list.virtual_list = IndexMap::new();
-                        self.update_virtual_list();
-
-                        self.content_area = ContentArea::Files;
-                        return Command::batch(commands);
                     }
 
-                    db::Event::None => {}
+                    data::DataEvent::InputRequested(input) => {
+                        self.send_text = input;
+                        self.modal = Modals::RequestText;
+                    }
                 }
             }
 
-            Message::DbQuery(command) => match &mut self.db_state {
-                DbState::Closed => {
-                    panic!("DB not opened?")
-                }
-
-                DbState::Open(conn) => {
-                    match &command {
-                        db::SqlCommand::GetTVShowList => {
+            Message::GetData(cmd) => match &mut self.state {
+                State::Connected(connection, _) | State::Offline(connection) => {
+                    match &cmd {
+                        data::Get::Movies | data::Get::TVShows | data::Get::Sources => {
                             self.item_list.breadcrumb.clear();
                             self.item_list
                                 .breadcrumb
-                                .push(Message::DbQuery(command.clone()));
+                                .push(Message::GetData(cmd.clone()));
                             self.content_area = ContentArea::Loading;
                         }
-                        db::SqlCommand::GetTVSeasons(_) => {
+                        data::Get::TVEpisodes(_, _)
+                        | data::Get::TVSeasons(_)
+                        | data::Get::Directory { .. } => {
                             self.item_list
                                 .breadcrumb
-                                .push(Message::DbQuery(command.clone()));
-                            self.content_area = ContentArea::Loading;
-                        }
-
-                        db::SqlCommand::GetTVEpisodes(_, _) => {
-                            self.item_list
-                                .breadcrumb
-                                .push(Message::DbQuery(command.clone()));
+                                .push(Message::GetData(cmd.clone()));
                             self.content_area = ContentArea::Loading;
                         }
                         _ => {}
                     }
-                    conn.send(command);
+                    connection.send(cmd);
                 }
+                _ => {}
             },
 
-            Message::ServerEvent(event) => {
-                if let Some(value) = self.handle_server_event(event) {
-                    return value;
-                }
-            }
-
             Message::KodiReq(command) => match &mut self.state {
-                State::Connected(connection) => {
-                    match &command {
-                        &KodiCommand::GetSources(_) => {
-                            self.item_list.breadcrumb.clear();
-                            self.item_list
-                                .breadcrumb
-                                .push(Message::KodiReq(command.clone()));
-                            self.content_area = ContentArea::Loading;
-                        }
-                        &KodiCommand::GetDirectory { .. } => {
-                            self.item_list
-                                .breadcrumb
-                                .push(Message::KodiReq(command.clone()));
-                            self.content_area = ContentArea::Loading;
-                        }
-                        _ => {}
-                    }
+                State::Connected(_, connection) => {
                     connection.send(command);
                 }
-                State::Disconnected => {
+
+                State::Offline(_) | State::Disconnected => {
                     println!("TODO: Kodi is disconnected UI state")
                     //panic!("Kodi is apparently disconnected so I can't");
                 }
@@ -553,25 +418,20 @@ impl Krustmote {
 
             _ => {}
         }
+
         Command::none()
     }
 
     fn subscription(&self) -> iced::Subscription<Message> {
-        let mut subs = vec![
+        let subs = vec![
             event::listen_with(|mevent, _, _| match mevent {
                 Event::Window(window::Event::Resized(sz)) => {
                     Some(Message::WindowResized(sz.height as u32))
                 }
                 _ => None,
             }),
-            Subscription::run(db::connect).map(Message::DbEvent),
+            Subscription::run(data::connect).map(Message::DataEvent),
         ];
-        if let Some(kodi_server) = &self.kodi_status.server {
-            subs.push(
-                Subscription::run_with_id(42, client::connect(Arc::clone(kodi_server)))
-                    .map(Message::ServerEvent),
-            );
-        };
 
         iced::Subscription::batch(subs)
     }
@@ -620,9 +480,7 @@ impl Krustmote {
             content
         }
     }
-}
 
-impl Krustmote {
     fn up_breadcrumb(&mut self) -> Message {
         // dbg!(&self.breadcrumb);
         let _ = self.item_list.breadcrumb.pop();
@@ -630,9 +488,83 @@ impl Krustmote {
         command.expect("List should have an entry if this is callable")
     }
 
+    fn update_virtual_list(&mut self) {
+        let sem = Arc::new(&SEM);
+        let http_url = if let Some(server) = &self.kodi_status.server {
+            server.http_url()
+        } else {
+            // TODO change get_art_data to accept None for server
+            panic!("This should never be called if there's no server")
+        };
+
+        self.item_list.filtered_count = 0;
+        for (i, file) in self
+            .item_list
+            .raw_data
+            .iter()
+            .filter(|i| i.label_contains(&self.item_list.filter))
+            .enumerate()
+        {
+            self.item_list.filtered_count += 1;
+            //let i = i.clone();
+            if i >= self.item_list.start_offset as usize
+                && i <= (self.item_list.visible_count + self.item_list.start_offset) as usize
+            {
+                if self.item_list.virtual_list.contains_key(&i) {
+                    continue;
+                }
+                let pic = file.get_art_data(&http_url);
+                let pic = Krustmote::get_art(&sem, pic);
+                let mut item = file.into_listdata();
+                item.image = pic;
+                self.item_list.virtual_list.insert(i, item);
+            } else {
+                if self.item_list.virtual_list.contains_key(&i) {
+                    self.item_list.virtual_list.shift_remove(&i);
+                }
+            }
+        }
+        self.item_list.virtual_list.sort_keys()
+    }
+
+    // This entire thing might be better using worker oneshots/etc
+    // but iced 0.14 will have 'Straw' which is perfect for something like this
+    fn get_art(sem: &Arc<&'static Semaphore>, pic: Pic) -> Arc<OnceLock<image::Handle>> {
+        if !pic.url.is_empty() {
+            // Check cache hit before semaphore await for possible 'early return'
+            // This semaphore limits it to 10 hits on the server at a time.
+            let permit = Arc::clone(sem).acquire(); // .acquire_owned();
+            let lock = Arc::new(OnceLock::new());
+            let c_lock = Arc::clone(&lock);
+            tokio::spawn(async move {
+                // hashing this WITH server url is actually not ideal
+                // as even shared databases will then each have their own cached images
+                // should hash the original art URL during get_art_data and make it a field in 'pic'
+                // technically even unshared db with same art url should have same pic and cache hit
+                let hash = fxhash::hash(&pic.url);
+                let path = format!("./imagecache/{:0x}.jpg", hash);
+                let path = Path::new(&path);
+
+                let res = match Krustmote::cache_hit(&path).await {
+                    Ok(val) => Ok(val),
+                    Err(_) => {
+                        let _permit = permit.await;
+                        Krustmote::download_pic(pic, &path).await
+                    }
+                };
+                if let Ok(res) = res {
+                    let _ = c_lock.set(res);
+                } else {
+                    dbg!(res.err());
+                };
+            });
+            lock
+        } else {
+            Arc::new(OnceLock::new())
+        }
+    }
+
     // TODO! Proper path support! (if the dir doesn't exist this will fail)
-    // I wanted this to be an option but the imagelib::open returns a result.
-    // so it seems easier.
     async fn cache_hit(path: &Path) -> Result<image::Handle, Box<dyn Error + Send + Sync>> {
         let img = if fs::metadata(path).await.is_ok() {
             imagelib::open(path)?
@@ -660,181 +592,5 @@ impl Krustmote {
         let img = img.into_rgba8().to_vec();
 
         Ok(image::Handle::from_rgba(pic.w, pic.h, img))
-    }
-
-    fn handle_server_event(&mut self, event: client::Event) -> Option<Command<Message>> {
-        match event {
-            client::Event::Connected(connection) => {
-                self.state = State::Connected(connection);
-            }
-
-            client::Event::Disconnected => {
-                self.kodi_status.active_player_id = None;
-                self.state = State::Disconnected;
-            }
-
-            client::Event::UpdateDirList(dirlist, path) => {
-                self.item_list.list_title = path;
-                self.item_list.raw_data = dirlist.into_iter().map(|v| Box::new(v) as _).collect();
-
-                self.item_list.filter = "".to_string();
-                self.item_list.start_offset = 0;
-
-                self.item_list.virtual_list = IndexMap::new();
-                self.update_virtual_list();
-
-                self.content_area = ContentArea::Files;
-                return Some(scrollable::snap_to(
-                    Id::new("files"),
-                    scrollable::RelativeOffset { x: 0.0, y: 0.0 },
-                ));
-            }
-
-            client::Event::UpdateSources(sources) => {
-                self.item_list.list_title = "Sources".to_string();
-                self.item_list.raw_data = sources.into_iter().map(|v| Box::new(v) as _).collect();
-                self.item_list.filter = "".to_string();
-                self.item_list.start_offset = 0;
-
-                self.item_list.virtual_list = IndexMap::new();
-                self.update_virtual_list();
-
-                self.content_area = ContentArea::Files;
-                return Some(scrollable::snap_to(
-                    Id::new("files"),
-                    scrollable::RelativeOffset { x: 0.0, y: 0.0 },
-                ));
-            }
-
-            client::Event::UpdatePlayerProps(player_props) => match player_props {
-                None => {
-                    self.kodi_status.active_player_id = None;
-                }
-                Some(props) => {
-                    if self.kodi_status.active_player_id.is_none() {
-                        self.kodi_status.active_player_id = props.player_id;
-                        let player_id = props.player_id.expect("player_id should exist");
-                        return Some(Command::perform(async {}, move |_| {
-                            Message::KodiReq(KodiCommand::PlayerGetPlayingItem(player_id))
-                        }));
-                    }
-                    self.kodi_status.active_player_id = props.player_id;
-
-                    // Not sure I like this. might add a playbar_position type thing.
-                    if !self.slider_grabbed {
-                        self.kodi_status.player_props = props;
-                    } else {
-                        let selected_time = self.kodi_status.player_props.time.clone();
-                        self.kodi_status.player_props = props;
-                        self.kodi_status.player_props.time = selected_time;
-                    }
-                }
-            },
-
-            client::Event::UpdateKodiAppStatus(status) => {
-                self.kodi_status.muted = status.muted;
-            }
-
-            client::Event::UpdatePlayingItem(item) => {
-                self.kodi_status.playing_title = item.make_title();
-            }
-
-            client::Event::InputRequested(input) => {
-                self.send_text = input;
-                self.modal = Modals::RequestText;
-            }
-
-            client::Event::UpdateMovieList(movies) => {
-                return Some(Command::perform(async { movies }, move |m| {
-                    Message::DbQuery(db::SqlCommand::InsertMovies(m))
-                }));
-            }
-
-            client::Event::UpdateTVList(shows, seasons, episodes) => {
-                return Some(Command::perform(
-                    async { (shows, seasons, episodes) },
-                    move |(shows, seasons, episodes)| {
-                        Message::DbQuery(db::SqlCommand::InsertTVShows(shows, seasons, episodes))
-                    },
-                ));
-            }
-
-            client::Event::None => {}
-        }
-        None
-    }
-
-    fn update_virtual_list(&mut self) {
-        let sem = Arc::new(&SEM);
-        let http_url = if let Some(server) = &self.kodi_status.server {
-            server.http_url()
-        } else {
-            panic!("This should never be called if there's no server")
-        };
-
-        self.item_list.filtered_count = 0;
-        //self.item_list.virtual_list = Vec::new();
-        for (i, file) in self
-            .item_list
-            .raw_data
-            .iter()
-            .filter(|i| i.label_contains(&self.item_list.filter))
-            .enumerate()
-        {
-            self.item_list.filtered_count += 1;
-            //let i = i.clone();
-            if i >= self.item_list.start_offset as usize
-                && i <= (self.item_list.visible_count + self.item_list.start_offset) as usize
-            {
-                if self.item_list.virtual_list.contains_key(&i) {
-                    continue;
-                }
-                let pic = file.get_art_data(&http_url);
-                let pic = get_art(&sem, pic);
-                let mut item = file.into_listdata();
-                item.image = pic;
-                self.item_list.virtual_list.insert(i, item);
-            } else {
-                if self.item_list.virtual_list.contains_key(&i) {
-                    self.item_list.virtual_list.shift_remove(&i);
-                }
-            }
-        }
-        self.item_list.virtual_list.sort_keys()
-    }
-}
-
-fn get_art(sem: &Arc<&'static Semaphore>, pic: Pic) -> Arc<OnceLock<image::Handle>> {
-    if !pic.url.is_empty() {
-        // Check cache hit before semaphore await for possible 'early return'
-        // This semaphore limits it to 10 hits on the server at a time.
-        let permit = Arc::clone(sem).acquire(); // .acquire_owned();
-        let lock = Arc::new(OnceLock::new());
-        let c_lock = Arc::clone(&lock);
-        tokio::spawn(async move {
-            // hashing this WITH server url is actually not ideal
-            // as even shared databases will then each have their own cached images
-            // should hash the original art URL during get_art_data and make it a field in 'pic'
-            // technically even unshared db with same art url should have same pic and cache hit
-            let hash = fxhash::hash(&pic.url);
-            let path = format!("./imagecache/{:0x}.jpg", hash);
-            let path = Path::new(&path);
-
-            let res = Krustmote::cache_hit(&path).await;
-            let res = if res.is_ok() {
-                res
-            } else {
-                let _permit = permit.await;
-                Krustmote::download_pic(pic, &path).await
-            };
-            if let Ok(res) = res {
-                let _ = c_lock.set(res);
-            } else {
-                dbg!(res.err());
-            };
-        });
-        lock
-    } else {
-        Arc::new(OnceLock::new())
     }
 }

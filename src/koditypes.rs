@@ -1,22 +1,18 @@
+use crate::data;
+use core::fmt::Debug;
+use iced::futures::channel::mpsc::Sender;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::sync::{Arc, OnceLock};
-
-use crate::db::SqlCommand;
 
 // TODO: Investigate Cow for these Strings
 
 // TODO: Massively refactor this file.
 //       Lots of duplicated code etc.
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum KodiCommand {
     ChangeServer(Arc<KodiServer>),
-    GetSources(MediaType), // TODO: SortType
-    GetDirectory {
-        path: String,
-        media_type: MediaType,
-    }, // TODO: SortType
     PlayerOpen(String),
     InputButtonEvent {
         button: &'static str,
@@ -42,14 +38,29 @@ pub enum KodiCommand {
     },
     InputSendText(String),
 
-    VideoLibraryGetMovies,
-    VideoLibraryGetTVShows,
-    VideoLibraryGetTVSeasons,
-    VideoLibraryGetTVEpisodes,
-
     PlayerGetProperties,
     PlayerGetPlayingItem(u8),
     PlayerGetActivePlayers,
+
+    GetSources {
+        sender: Sender<Vec<Box<dyn IntoListData + Send>>>,
+        media_type: MediaType,
+    },
+    GetDirectory {
+        sender: Sender<Vec<Box<dyn IntoListData + Send>>>,
+        path: String,
+        media_type: MediaType,
+    }, // TODO: SortType
+    VideoLibraryGetMovies {
+        sender: Sender<Vec<MovieListItem>>,
+        limit: i32,
+    },
+    VideoLibraryGetTVShows,
+    VideoLibraryGetTVSeasons {
+        sender: Sender<Vec<TVSeasonListItem>>,
+        tvshowid: i32,
+    },
+    VideoLibraryGetTVEpisodes,
 
     // only used for testing/debug:
     PlayerGetPlayingItemDebug(u8),
@@ -66,13 +77,30 @@ where
 }
 
 pub trait IntoListData {
+    fn source_data(&self) -> &'static str;
+    fn dyn_clone(&self) -> Box<dyn IntoListData + Send>;
     fn into_listdata(&self) -> crate::ListData;
     fn get_art_data(&self, http_url: &String) -> Pic;
     fn label_contains(&self, find: &String) -> bool;
 }
 
+impl Debug for dyn IntoListData + Send {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}::IntoListData", self.source_data())
+    }
+}
+
+impl Clone for Box<dyn IntoListData + Send> {
+    fn clone(&self) -> Self {
+        self.dyn_clone()
+    }
+}
+
 pub struct Pic {
     pub url: String,
+    // pub namehash: String,
+    // pub namehash: usize, //? - on one hand usize seems more efficient
+    //                          otoh hex string could be nice for some hax
     pub h: u32,
     pub w: u32,
 }
@@ -270,10 +298,18 @@ pub struct Sources {
 }
 
 impl IntoListData for Sources {
+    fn dyn_clone(&self) -> Box<dyn IntoListData + Send> {
+        Box::new(self.clone())
+    }
+
+    fn source_data(&self) -> &'static str {
+        "Sources"
+    }
+
     fn into_listdata(&self) -> crate::ListData {
         crate::ListData {
             label: self.label.clone(),
-            on_click: crate::Message::KodiReq(KodiCommand::GetDirectory {
+            on_click: crate::Message::GetData(data::Get::Directory {
                 path: self.file.clone(),
                 media_type: MediaType::Video,
             }),
@@ -285,8 +321,10 @@ impl IntoListData for Sources {
     }
 
     fn get_art_data(&self, _: &String) -> Pic {
+        // let hash = fxhash::hash("");
         Pic {
             url: "".to_string(),
+            // namehash: hash, // (or might use special '0' or something)
             h: 0,
             w: 0,
         }
@@ -299,9 +337,14 @@ impl IntoListData for Sources {
 
 // TODO: SortType that defines these
 #[derive(Serialize, Debug)]
-pub struct DirSort {
+pub struct ListSort {
     pub method: &'static str,
     pub order: &'static str,
+}
+
+#[derive(Serialize, Debug)]
+pub struct ListLimits {
+    pub end: i32,
 }
 
 pub const FILE_PROPS: [&'static str; 20] = [
@@ -351,9 +394,15 @@ pub struct DirList {
     pub type_: VideoType,
 }
 
-// NOTE: this leaves the image blank for now.
-// Could probably fix that by doing Into<Vec<ListData> for Vec<DirList>
 impl IntoListData for DirList {
+    fn dyn_clone(&self) -> Box<dyn IntoListData + Send> {
+        Box::new(self.clone())
+    }
+
+    fn source_data(&self) -> &'static str {
+        "DirList"
+    }
+
     fn into_listdata(&self) -> crate::ListData {
         let label = if self.type_ == VideoType::Episode {
             format!(
@@ -405,14 +454,14 @@ impl IntoListData for DirList {
 
         crate::ListData {
             label,
-            on_click: crate::Message::KodiReq(match self.filetype.as_str() {
-                "directory" => KodiCommand::GetDirectory {
+            on_click: match self.filetype.as_str() {
+                "directory" => crate::Message::GetData(data::Get::Directory {
                     path: self.file.clone(),
                     media_type: MediaType::Video,
-                },
-                "file" => KodiCommand::PlayerOpen(self.file.clone()),
+                }),
+                "file" => crate::Message::KodiReq(KodiCommand::PlayerOpen(self.file.clone())),
                 _ => panic!("Impossible kodi filetype {}", self.filetype),
-            }),
+            },
             play_count: self.playcount,
             bottom_right,
             bottom_left,
@@ -424,6 +473,7 @@ impl IntoListData for DirList {
         if self.type_ == VideoType::Episode && self.art.thumb.is_some() {
             let thumb = self.art.thumb.as_ref().unwrap();
             let thumb = urlencoding::encode(thumb.as_str());
+            // let hash = fxhash::hash(&thumb);
             Pic {
                 url: format!("{}/image/{}", http_url, thumb),
                 w: 192,
@@ -432,6 +482,7 @@ impl IntoListData for DirList {
         } else if self.art.poster.is_some() {
             let poster = self.art.poster.as_ref().unwrap();
             let poster = urlencoding::encode(poster.as_str());
+            // let hash = fxhash::hash(&poster);
             Pic {
                 url: format!("{}/image/{}", http_url, poster),
                 w: 80,
@@ -443,8 +494,10 @@ impl IntoListData for DirList {
             } else {
                 urlencoding::encode("image://DefaultFile.png/")
             };
+            // might set hash specifically to these filenames for the defaults.
             Pic {
                 url: format!("{}/image/{}", http_url, icon),
+                // hashname: "DefaultFile" / "DefaultFolder"
                 h: 120,
                 w: 80,
             }
@@ -625,7 +678,6 @@ pub const MINIMAL_EP_PROPS: [&'static str; 12] = [
     "art",
     "specialsortseason",
     "specialsortepisode",
-    // "showtitle", // ?? not sure if I want/need
 ];
 
 #[derive(Deserialize, Debug, Clone)]
@@ -671,17 +723,24 @@ pub struct TVEpisodeListItem {
     pub art: Art,
     pub specialsortseason: i16, // annoyingly these are -1 for non-special
     pub specialsortepisode: i16,
-    // showtitle? - really nly for the breadcrumb thing
 }
 
 impl IntoListData for TVShowListItem {
+    fn dyn_clone(&self) -> Box<dyn IntoListData + Send> {
+        Box::new(self.clone())
+    }
+
+    fn source_data(&self) -> &'static str {
+        "TVShow"
+    }
+
     fn into_listdata(&self) -> crate::ListData {
         // This is where it gets complicated.
         // I need to do a DBReq here to make it show the seasons - supply tvshow
         let on_click = if self.season == 1 {
-            crate::Message::DbQuery(SqlCommand::GetTVEpisodes(self.tvshowid, 1))
+            crate::Message::GetData(data::Get::TVEpisodes(self.tvshowid, 1))
         } else {
-            crate::Message::DbQuery(SqlCommand::GetTVSeasons(self.clone()))
+            crate::Message::GetData(data::Get::TVSeasons(self.tvshowid))
         };
 
         let bottom_left = Some(format!("Rating: {:.1}", self.rating));
@@ -720,12 +779,19 @@ impl IntoListData for TVShowListItem {
 }
 
 impl IntoListData for TVSeasonListItem {
+    fn dyn_clone(&self) -> Box<dyn IntoListData + Send> {
+        Box::new(self.clone())
+    }
+
+    fn source_data(&self) -> &'static str {
+        "TVSeason"
+    }
+
     fn into_listdata(&self) -> crate::ListData {
         // This is where it gets complicated.
         // I need to do a DBReq here to make it show the episodes with the tvshowid, season
 
-        let on_click =
-            crate::Message::DbQuery(SqlCommand::GetTVEpisodes(self.tvshowid, self.season));
+        let on_click = crate::Message::GetData(data::Get::TVEpisodes(self.tvshowid, self.season));
 
         crate::ListData {
             label: self.title.clone(),
@@ -747,12 +813,19 @@ impl IntoListData for TVSeasonListItem {
     }
 
     fn label_contains(&self, find: &String) -> bool {
-        // Can also search originaltitle etc with this.
         self.title.to_lowercase().contains(&find.to_lowercase())
     }
 }
 
 impl IntoListData for TVEpisodeListItem {
+    fn dyn_clone(&self) -> Box<dyn IntoListData + Send> {
+        Box::new(self.clone())
+    }
+
+    fn source_data(&self) -> &'static str {
+        "TVEpisode"
+    }
+
     fn into_listdata(&self) -> crate::ListData {
         let on_click = crate::Message::KodiReq(KodiCommand::PlayerOpen(self.file.clone()));
 
@@ -798,6 +871,7 @@ impl IntoListData for TVEpisodeListItem {
 
     fn label_contains(&self, find: &String) -> bool {
         // Can also search originaltitle etc with this.
+        // Might add season/ep number to what it searches.
         self.title.to_lowercase().contains(&find.to_lowercase())
     }
 }
@@ -830,6 +904,14 @@ pub struct MovieListItem {
 }
 
 impl IntoListData for MovieListItem {
+    fn dyn_clone(&self) -> Box<dyn IntoListData + Send> {
+        Box::new(self.clone())
+    }
+
+    fn source_data(&self) -> &'static str {
+        "Movie"
+    }
+
     fn into_listdata(&self) -> crate::ListData {
         let on_click = crate::Message::KodiReq(KodiCommand::PlayerOpen(self.file.clone()));
 

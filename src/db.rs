@@ -1,31 +1,45 @@
 use iced::futures::channel::mpsc::{channel, Receiver, Sender};
-use iced::futures::{SinkExt, Stream, StreamExt};
-use iced::stream;
+use iced::futures::channel::oneshot;
+use iced::futures::StreamExt;
 
 use rusqlite::params;
 use tokio_rusqlite::Connection;
 
 use crate::koditypes::*;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum SqlCommand {
-    GetServers,
+    GetServers {
+        sender: oneshot::Sender<Vec<KodiServer>>,
+    },
     AddOrEditServer(KodiServer),
-    InsertMovies(Vec<MovieListItem>),
-    GetMovieList,
-    InsertTVShows(
-        Vec<TVShowListItem>,
-        Vec<TVSeasonListItem>,
-        Vec<TVEpisodeListItem>,
-    ),
-    GetTVShowList,
-    GetTVSeasons(TVShowListItem),
-    GetTVEpisodes(u32, i16),
-}
 
-enum State {
-    Closed,
-    Open(Connection, Receiver<SqlCommand>),
+    GetMovieList {
+        sender: oneshot::Sender<Vec<Box<dyn IntoListData + Send>>>,
+    },
+    GetTVShowList {
+        sender: oneshot::Sender<Vec<Box<dyn IntoListData + Send>>>,
+    },
+    GetTVSeasons {
+        sender: oneshot::Sender<Vec<Box<dyn IntoListData + Send>>>,
+        tvshowid: u32,
+    },
+    GetTVEpisodes {
+        sender: oneshot::Sender<Vec<Box<dyn IntoListData + Send>>>,
+        tvshowid: u32,
+        season: i16,
+    },
+    GetTVShowItem {
+        sender: oneshot::Sender<TVShowListItem>,
+        tvshowid: u32,
+    },
+
+    GetMostRecentMovieDate {
+        sender: oneshot::Sender<String>,
+    },
+
+    InsertMovies(Vec<MovieListItem>),
+    InsertTVSeasons(Vec<TVSeasonListItem>),
 }
 
 #[derive(Debug, Clone)]
@@ -38,45 +52,34 @@ impl SqlConnection {
     }
 }
 
-pub fn connect() -> impl Stream<Item = Event> {
-    // struct Conn;
+pub async fn connect(output: oneshot::Sender<SqlConnection>) {
+    // TODO! Proper path support
+    match Connection::open("./krustmote.db").await {
+        Ok(conn) => {
+            let res = create_tables(&conn).await;
+            if res.is_err() {
+                dbg!(res.err());
+                panic!("Sqlite err creating tables");
+            }
 
-    stream::channel(100, |output| async move { handle_connection(output).await })
+            let (sender, reciever) = channel(100);
+            let _ = output.send(SqlConnection(sender));
+
+            handle_connection(conn, reciever).await;
+        }
+        Err(err) => {
+            // let _ = output;
+            dbg!(err);
+        }
+    }
 }
 
-async fn handle_connection(mut output: Sender<Event>) -> ! {
-    let mut state = State::Closed;
+async fn handle_connection(mut conn: Connection, mut reciever: Receiver<SqlCommand>) -> ! {
     loop {
-        match &mut state {
-            State::Closed => {
-                // TODO! Proper path support
-                match Connection::open("./krustmote.db").await {
-                    Ok(conn) => {
-                        let res = create_tables(&conn).await;
-                        if res.is_err() {
-                            dbg!(res.err());
-                            panic!("Sqlite err creating tables");
-                        }
-
-                        let (sender, reciever) = channel(100);
-                        let _ = output.send(Event::Opened(SqlConnection(sender))).await;
-                        state = State::Open(conn, reciever);
-                    }
-                    Err(err) => {
-                        let _ = output.send(Event::Closed);
-                        dbg!(err);
-                    }
-                };
-            }
-            State::Open(conn, input) => {
-                let cmd = input.select_next_some().await;
-                let res = handle_command(cmd, conn).await;
-                if let Ok(res) = res {
-                    let _ = output.send(res).await;
-                } else {
-                    dbg!(res.err());
-                }
-            }
+        let cmd = reciever.select_next_some().await;
+        let res = handle_command(cmd, &mut conn).await;
+        if res.is_err() {
+            dbg!(res.err());
         }
     }
 }
@@ -84,11 +87,12 @@ async fn handle_connection(mut output: Sender<Event>) -> ! {
 async fn handle_command(
     cmd: SqlCommand,
     conn: &mut Connection,
-) -> Result<Event, tokio_rusqlite::Error> {
+) -> Result<(), tokio_rusqlite::Error> {
     match cmd {
-        SqlCommand::GetServers => get_server_list(conn).await,
+        SqlCommand::GetServers { sender } => get_server_list(conn, sender).await,
 
         SqlCommand::AddOrEditServer(server) => {
+            // NOTE might change this to NOT return the servers
             dbg!(&server);
             let res = conn
                 .call(move |conn| {
@@ -113,39 +117,99 @@ async fn handle_command(
                 .await;
 
             dbg!(res.err());
-
-            // Now send UpdateServers (hopefully) to let front end know
-            get_server_list(conn).await
+            Ok(())
         }
 
         SqlCommand::InsertMovies(movies) => insert_movies(conn, movies).await,
 
-        SqlCommand::GetMovieList => get_movie_list(conn).await,
+        SqlCommand::GetMovieList { sender } => get_movie_list(conn, sender).await,
 
-        SqlCommand::InsertTVShows(tvshows, seasons, episodes) => {
-            insert_tvshows(conn, tvshows).await?;
-            insert_tvseasons(conn, seasons).await?;
-            insert_tvepisodes(conn, episodes).await
+        SqlCommand::GetMostRecentMovieDate { sender } => {
+            get_most_recent_movie_datestamp(conn, sender).await
+        }
+        // SqlCommand::InsertTVShows(tvshows, seasons, episodes) => {
+        //     insert_tvshows(conn, tvshows).await?;
+        //     insert_tvseasons(conn, seasons).await?;
+        //     insert_tvepisodes(conn, episodes).await
+        // }
+        SqlCommand::GetTVShowList { sender } => get_tv_show_list(conn, sender).await,
+
+        SqlCommand::GetTVSeasons { sender, tvshowid } => {
+            get_tv_seasons_list(conn, sender, tvshowid).await
         }
 
-        SqlCommand::GetTVShowList => get_tv_show_list(conn).await,
+        SqlCommand::GetTVEpisodes {
+            sender,
+            tvshowid,
+            season,
+        } => get_tv_episode_list(conn, sender, tvshowid, season).await,
 
-        SqlCommand::GetTVSeasons(tvshow) => get_tv_show_seasons(conn, tvshow).await,
-
-        SqlCommand::GetTVEpisodes(tvshow, season) => {
-            get_tv_episode_list(conn, tvshow, season).await
+        SqlCommand::GetTVShowItem { sender, tvshowid } => {
+            get_tv_show_item(conn, sender, tvshowid).await
         }
+
+        SqlCommand::InsertTVSeasons(seasons) => insert_tvseasons(conn, seasons).await,
     }
 }
 
-async fn get_tv_show_list(conn: &Connection) -> Result<Event, tokio_rusqlite::Error> {
+// note I may add a limiter/condition to tv_show_list later instead of this
+async fn get_tv_show_item(
+    conn: &Connection,
+    sender: oneshot::Sender<TVShowListItem>,
+    tvshowid: u32,
+) -> Result<(), tokio_rusqlite::Error> {
+    let item_result = conn
+        .call(move |conn| {
+            let q = "SELECT * FROM tvshowlist WHERE tvshowid = ?1";
+            let item = conn.query_row(q, [tvshowid], |row| {
+                Ok(TVShowListItem {
+                    tvshowid: row.get(0)?,
+                    title: row.get(1)?,
+                    year: row.get(2)?,
+                    season: row.get(3)?,
+                    episode: row.get(4)?,
+                    file: row.get(5)?,
+                    dateadded: row.get(6)?,
+                    genre: {
+                        let genre_str: String = row.get(7)?;
+                        genre_str.split(",").map(String::from).collect()
+                    },
+                    rating: row.get(8)?,
+                    playcount: row.get(9)?,
+                    art: Art {
+                        poster: {
+                            let poster_str: String = row.get(10)?;
+                            if poster_str.is_empty() {
+                                None
+                            } else {
+                                Some(poster_str)
+                            }
+                        },
+                        thumb: None,
+                    },
+                })
+            })?;
+            Ok::<TVShowListItem, tokio_rusqlite::Error>(item)
+        })
+        .await?;
+    let _ = sender.send(item_result);
+
+    Ok(())
+}
+
+// for all the <media>_list functions boxing directly during query_map
+//   seems to be a good perf/efficiency improvement.
+async fn get_tv_show_list(
+    conn: &Connection,
+    sender: oneshot::Sender<Vec<Box<dyn IntoListData + Send>>>,
+) -> Result<(), tokio_rusqlite::Error> {
     let shows_result = conn
         .call(move |conn| {
-            let q = "SELECT * FROM tvshowlist ORDER BY title";
+            let q = "SELECT * FROM tvshowlist ORDER BY title COLLATE NOCASE ASC";
             let mut stmt = conn.prepare(q)?;
             let shows = stmt
                 .query_map([], |row| {
-                    Ok(TVShowListItem {
+                    Ok(Box::new(TVShowListItem {
                         tvshowid: row.get(0)?,
                         title: row.get(1)?,
                         year: row.get(2)?,
@@ -170,60 +234,51 @@ async fn get_tv_show_list(conn: &Connection) -> Result<Event, tokio_rusqlite::Er
                             },
                             thumb: None,
                         },
-                    })
+                    }) as _)
                 })?
-                .collect::<Result<Vec<TVShowListItem>, rusqlite::Error>>()?;
+                .collect::<Result<Vec<Box<dyn IntoListData + Send>>, rusqlite::Error>>()?;
             Ok::<_, tokio_rusqlite::Error>(shows)
         })
-        .await;
+        .await?;
 
-    match shows_result {
-        Ok(shows) => Ok(Event::UpdateTVShowList(shows)),
-        Err(err) => {
-            dbg!(&err);
-            Err(err) // Return the error
-        }
-    }
+    let _ = sender.send(shows_result);
+    Ok(())
 }
 
-async fn get_tv_show_seasons(
+async fn get_tv_seasons_list(
     conn: &Connection,
-    tvshow: TVShowListItem,
-) -> Result<Event, tokio_rusqlite::Error> {
-    let tvshowid = tvshow.tvshowid;
+    sender: oneshot::Sender<Vec<Box<dyn IntoListData + Send>>>,
+    tvshowid: u32,
+) -> Result<(), tokio_rusqlite::Error> {
     let seasons_result = conn
         .call(move |conn| {
             let q = "SELECT * FROM tvseasonlist WHERE tvshowid = ?1 ORDER BY season";
             let mut stmt = conn.prepare(q)?;
             let seasons = stmt
                 .query_map([tvshowid], |row| {
-                    Ok(TVSeasonListItem {
+                    Ok(Box::new(TVSeasonListItem {
                         seasonid: row.get(0)?,
                         tvshowid: row.get(1)?,
                         title: row.get(2)?,
                         season: row.get(3)?,
                         episode: row.get(4)?,
-                    })
+                    }) as _)
                 })?
-                .collect::<Result<Vec<TVSeasonListItem>, rusqlite::Error>>()?;
+                .collect::<Result<Vec<Box<dyn IntoListData + Send>>, rusqlite::Error>>()?;
             Ok::<_, tokio_rusqlite::Error>(seasons)
         })
-        .await;
+        .await?;
 
-    match seasons_result {
-        Ok(seasons) => Ok(Event::UpdateTVSeasonList(tvshow, seasons)),
-        Err(err) => {
-            dbg!(&err);
-            Err(err) // Return the error
-        }
-    }
+    let _ = sender.send(seasons_result);
+    Ok(())
 }
 
 async fn get_tv_episode_list(
     conn: &Connection,
+    sender: oneshot::Sender<Vec<Box<dyn IntoListData + Send>>>,
     tvshow: u32,
     season: i16,
-) -> Result<Event, tokio_rusqlite::Error> {
+) -> Result<(), tokio_rusqlite::Error> {
     let episodes_result = conn
         .call(move |conn| {
             let (q, params) = if season == -1 {
@@ -250,7 +305,7 @@ async fn get_tv_episode_list(
             let mut stmt = conn.prepare(q)?;
             let episodes = stmt
                 .query_map(params, |row| {
-                    Ok(TVEpisodeListItem {
+                    Ok(Box::new(TVEpisodeListItem {
                         episodeid: row.get(0)?,
                         tvshowid: row.get(1)?,
                         title: row.get(2)?,
@@ -274,41 +329,28 @@ async fn get_tv_episode_list(
                         },
                         specialsortseason: row.get(11)?,
                         specialsortepisode: row.get(12)?,
-                    })
+                    }) as _)
                 })?
-                .collect::<Result<Vec<TVEpisodeListItem>, rusqlite::Error>>()?;
+                .collect::<Result<Vec<Box<dyn IntoListData + Send>>, rusqlite::Error>>()?;
             Ok::<_, tokio_rusqlite::Error>(episodes)
         })
-        .await;
+        .await?;
 
-    let tvtitle = conn
-        .call(move |conn| {
-            let q = "SELECT title FROM tvshowlist WHERE tvshowid = ?1";
-            let title = conn.query_row(q, [tvshow], |row| row.get(0))?;
-            Ok::<String, tokio_rusqlite::Error>(title)
-        })
-        .await;
-
-    match episodes_result {
-        Ok(episodes) => Ok(Event::UpdateEpisodeList(
-            tvtitle.unwrap_or_default(),
-            episodes,
-        )),
-        Err(err) => {
-            dbg!(&err);
-            Err(err) // Return the error
-        }
-    }
+    let _ = sender.send(episodes_result);
+    Ok(())
 }
 
-async fn get_movie_list(conn: &Connection) -> Result<Event, tokio_rusqlite::Error> {
+async fn get_movie_list(
+    conn: &Connection,
+    sender: oneshot::Sender<Vec<Box<dyn IntoListData + Send>>>,
+) -> Result<(), tokio_rusqlite::Error> {
     let movies_result = conn
         .call(|conn| {
             let q = "SELECT * FROM movielist ORDER BY dateadded DESC";
             let mut stmt = conn.prepare(q)?;
             let movies = stmt
                 .query_map([], |row| {
-                    Ok(MovieListItem {
+                    Ok(Box::new(MovieListItem {
                         movieid: row.get(0)?,
                         title: row.get(1)?,
                         genre: {
@@ -332,24 +374,42 @@ async fn get_movie_list(conn: &Connection) -> Result<Event, tokio_rusqlite::Erro
                             },
                             thumb: None,
                         },
-                    })
+                    }) as _)
                 })?
-                .collect::<Result<Vec<MovieListItem>, rusqlite::Error>>()?;
+                .collect::<Result<Vec<Box<dyn IntoListData + Send>>, rusqlite::Error>>()?;
 
             Ok::<_, tokio_rusqlite::Error>(movies)
         })
-        .await;
+        .await?;
 
-    match movies_result {
-        Ok(movies) => Ok(Event::UpdateMovieList(movies)),
-        Err(err) => {
-            dbg!(&err);
-            Err(err) // Return the error
-        }
-    }
+    let _ = sender.send(movies_result);
+    Ok(())
 }
 
-async fn get_server_list(conn: &Connection) -> Result<Event, tokio_rusqlite::Error> {
+// I think it's easier to make a dedicated command for this
+// I never need a partial (1 in this case) list of movies otherwise afaik
+// !!!!!!!!!!!!!! THIS DOESNT DEAL WITH NO DATA !!!!!!!!!!!!!!!!!!!
+// if no data it will err and never send. Then the RX side will be waiting forever?
+async fn get_most_recent_movie_datestamp(
+    conn: &Connection,
+    sender: oneshot::Sender<String>,
+) -> Result<(), tokio_rusqlite::Error> {
+    let last_date = conn
+        .call(|conn| {
+            let q = "SELECT dateadded FROM movielist ORDER BY dateadded DESC LIMIT 1";
+            let date = conn.query_row(q, [], |row| row.get(0))?;
+            Ok::<String, tokio_rusqlite::Error>(date)
+        })
+        .await?;
+
+    let _ = sender.send(last_date);
+    Ok(())
+}
+
+async fn get_server_list(
+    conn: &Connection,
+    sender: oneshot::Sender<Vec<KodiServer>>,
+) -> Result<(), tokio_rusqlite::Error> {
     let servers = conn
         .call(|conn| {
             let q = "SELECT * FROM servers";
@@ -371,13 +431,14 @@ async fn get_server_list(conn: &Connection) -> Result<Event, tokio_rusqlite::Err
             Ok::<_, tokio_rusqlite::Error>(servers)
         })
         .await??;
-    Ok(Event::UpdateServers(servers))
+    let _ = sender.send(servers);
+    Ok(())
 }
 
 async fn insert_movies(
     conn: &Connection,
     movies: Vec<MovieListItem>,
-) -> Result<Event, tokio_rusqlite::Error> {
+) -> Result<(), tokio_rusqlite::Error> {
     // This method does NOT clear old db entries
     // so there may be stale movie references in the DB
     // can likely make a 'clean db' function that takes only movieid list
@@ -419,13 +480,14 @@ async fn insert_movies(
         return Err(err);
     }
 
-    Ok(Event::None)
+    // Ok(Event::None)
+    Ok(())
 }
 
 async fn insert_tvshows(
     conn: &Connection,
     tvshows: Vec<TVShowListItem>,
-) -> Result<Event, tokio_rusqlite::Error> {
+) -> Result<(), tokio_rusqlite::Error> {
     // This method does NOT clear old db entries
     // so there may be stale references in the DB
     let shows_result = conn
@@ -467,13 +529,14 @@ async fn insert_tvshows(
         return Err(err);
     }
 
-    Ok(Event::None)
+    // Ok(Event::None)
+    Ok(())
 }
 
 async fn insert_tvseasons(
     conn: &Connection,
     seasons: Vec<TVSeasonListItem>,
-) -> Result<Event, tokio_rusqlite::Error> {
+) -> Result<(), tokio_rusqlite::Error> {
     // This method does NOT clear old db entries
     // so there may be stale references in the DB
     let shows_result = conn
@@ -509,13 +572,13 @@ async fn insert_tvseasons(
         return Err(err);
     }
 
-    Ok(Event::None)
+    Ok(())
 }
 
 async fn insert_tvepisodes(
     conn: &Connection,
     episodes: Vec<TVEpisodeListItem>,
-) -> Result<Event, tokio_rusqlite::Error> {
+) -> Result<(), tokio_rusqlite::Error> {
     // This method does NOT clear old db entries
     // so there may be stale references in the DB
     let shows_result = conn
@@ -560,11 +623,11 @@ async fn insert_tvepisodes(
         return Err(err);
     }
 
-    Ok(Event::None)
+    Ok(())
 }
 
-async fn create_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
-    let servers = conn.call(|conn| {conn.execute(
+async fn create_tables(conn: &Connection) -> Result<(), tokio_rusqlite::Error> {
+    let _servers = conn.call(|conn| {conn.execute(
         "CREATE TABLE IF NOT EXISTS 'servers' (
             id INTEGER PRIMARY KEY,
             name TEXT NOT NULL,
@@ -578,9 +641,9 @@ async fn create_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
         [],
     )?;
     Ok::<_, tokio_rusqlite::Error>}(())
-    ).await;
+    ).await?;
 
-    dbg!(servers.err());
+    // dbg!(servers.err());
 
     // Not used yet:
     // Will eventually be used for selected server and others.
@@ -597,7 +660,10 @@ async fn create_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
 
     // dbg!(settings.err());
 
-    let movielist = conn.call(|conn| {conn.execute(
+    // TODO - these table names should include db_id ie. movielist0 etc.
+    //        or I can make db0.sqlite etc separate from settings/server db
+
+    let _movielist = conn.call(|conn| {conn.execute(
         "CREATE TABLE IF NOT EXISTS 'movielist' (
             movieid INTEGER PRIMARY KEY ON CONFLICT REPLACE,
             title TEXT,
@@ -613,14 +679,14 @@ async fn create_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
         [],
     )?;
     Ok::<_, tokio_rusqlite::Error>}(())
-    ).await;
+    ).await?;
 
-    dbg!(movielist.err());
+    // dbg!(movielist.err());
 
     // Due to websocket response size limits I have to keep the movielist to minimal fields
     // I can create a moviedetails db with the same `movieid` then use JOIN
 
-    let tvshowlist = conn.call(|conn| {conn.execute(
+    let _tvshowlist = conn.call(|conn| {conn.execute(
         "CREATE TABLE IF NOT EXISTS 'tvshowlist' (
             tvshowid INTEGER PRIMARY KEY ON CONFLICT REPLACE,
             title TEXT,
@@ -637,11 +703,11 @@ async fn create_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
         [],
     )?;
     Ok::<_, tokio_rusqlite::Error>}(())
-    ).await;
+    ).await?;
 
-    dbg!(tvshowlist.err());
+    // dbg!(tvshowlist.err());
 
-    let tvseasonlist = conn.call(|conn| {conn.execute(
+    let _tvseasonlist = conn.call(|conn| {conn.execute(
         "CREATE TABLE IF NOT EXISTS 'tvseasonlist' (
             seasonid INTEGER PRIMARY KEY ON CONFLICT REPLACE,
             tvshowid INTEGER,
@@ -652,11 +718,11 @@ async fn create_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
         [],
     )?;
     Ok::<_, tokio_rusqlite::Error>}(())
-    ).await;
+    ).await?;
 
-    dbg!(tvseasonlist.err());
+    // dbg!(tvseasonlist.err());
 
-    let tvepisodelist = conn.call(|conn| {conn.execute(
+    let _tvepisodelist = conn.call(|conn| {conn.execute(
         "CREATE TABLE IF NOT EXISTS 'tvepisodelist' (
             episodeid INTEGER PRIMARY KEY ON CONFLICT REPLACE,
             tvshowid INTEGER,
@@ -675,21 +741,9 @@ async fn create_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
         [],
     )?;
     Ok::<_, tokio_rusqlite::Error>}(())
-    ).await;
+    ).await?;
 
-    dbg!(tvepisodelist.err());
+    // dbg!(tvepisodelist.err());
 
     Ok(())
-}
-
-#[derive(Debug, Clone)]
-pub enum Event {
-    Opened(SqlConnection),
-    Closed,
-    None,
-    UpdateServers(Vec<KodiServer>),
-    UpdateMovieList(Vec<MovieListItem>),
-    UpdateTVShowList(Vec<TVShowListItem>),
-    UpdateTVSeasonList(TVShowListItem, Vec<TVSeasonListItem>),
-    UpdateEpisodeList(String, Vec<TVEpisodeListItem>),
 }

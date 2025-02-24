@@ -9,8 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use iced::futures::channel::mpsc::{channel, Receiver, Sender};
-use iced::futures::{SinkExt, Stream, StreamExt};
-use iced::stream;
+use iced::futures::{SinkExt, StreamExt};
 
 use tokio::select;
 use tokio::time::{interval, Duration};
@@ -50,11 +49,8 @@ impl Connection {
     }
 }
 
-pub fn connect(svr: Arc<KodiServer>) -> impl Stream<Item = Event> {
-    stream::channel(
-        100,
-        |output| async move { handle_connection(output, svr).await },
-    )
+pub async fn connect(svr: Arc<KodiServer>, sender: Sender<Event>) {
+    handle_connection(sender, svr).await;
 }
 
 async fn handle_connection(mut output: Sender<Event>, mut server: Arc<KodiServer>) -> ! {
@@ -138,6 +134,10 @@ async fn handle_connection(mut output: Sender<Event>, mut server: Arc<KodiServer
                         }
                     }
 
+
+
+
+
                     message = input.select_next_some() => {
                         dbg!(&message);
 
@@ -154,7 +154,9 @@ async fn handle_connection(mut output: Sender<Event>, mut server: Arc<KodiServer
                         ).await;
                         if result.is_err() {
                             dbg!(result.err());
-                            state = State::Disconnected;
+                            // TODO! figure out when this is a command err
+                            //   vs an actual websocket connection error
+                            // state = State::Disconnected;
                         } else {
                             let _ = output.send(result.unwrap()).await;
                         }
@@ -222,7 +224,11 @@ async fn handle_kodi_command(
     match message {
         KodiCommand::ChangeServer(_) => Ok(Event::Disconnected),
 
-        KodiCommand::GetDirectory { path, media_type } => {
+        KodiCommand::GetDirectory {
+            mut sender,
+            path,
+            media_type,
+        } => {
             let response: Map<String, Value> = client
                 .request(
                     "Files.GetDirectory",
@@ -230,7 +236,7 @@ async fn handle_kodi_command(
                         &path,
                         media_type.as_str(),
                         FILE_PROPS,
-                        DirSort {
+                        ListSort {
                             method: "date",
                             order: "descending"
                         } // TODO: SortType
@@ -238,28 +244,39 @@ async fn handle_kodi_command(
                 )
                 .await?;
 
-            let list = <Vec<DirList> as Deserialize>::deserialize(&response["files"])
-                .expect("DirList should deserialize");
+            let list: Vec<Box<dyn IntoListData + Send>> =
+                <Vec<DirList> as Deserialize>::deserialize(&response["files"])?
+                    .into_iter()
+                    .map(|v| Box::new(v) as Box<dyn IntoListData + Send>)
+                    .collect();
+            let _ = sender.send(list).await;
 
-            Ok(Event::UpdateDirList(list, path))
+            Ok(Event::None)
         }
 
-        KodiCommand::GetSources(mediatype) => {
+        KodiCommand::GetSources {
+            mut sender,
+            media_type,
+        } => {
             let response: Map<String, Value> = client
-                .request("Files.GetSources", rpc_params![mediatype.as_str()])
+                .request("Files.GetSources", rpc_params![media_type.as_str()])
                 .await?;
 
-            let mut sources: Vec<Sources> =
-                <Vec<Sources> as Deserialize>::deserialize(&response["sources"])
-                    .expect("Sources should deserialize");
+            let mut sources: Vec<Box<dyn IntoListData + Send>> =
+                <Vec<Sources> as Deserialize>::deserialize(&response["sources"])?
+                    .into_iter()
+                    .map(|v| Box::new(v) as Box<dyn IntoListData + Send>)
+                    .collect();
 
             let db = Sources {
                 label: "- Database".to_string(),
                 file: "videoDB://".to_string(),
             };
-            sources.insert(0, db);
+            sources.insert(0, Box::new(db));
 
-            Ok(Event::UpdateSources(sources))
+            let _ = sender.send(sources).await;
+
+            Ok(Event::None)
         }
 
         KodiCommand::PlayerOpen(file) => {
@@ -326,8 +343,7 @@ async fn handle_kodi_command(
                 )
                 .await?;
 
-            let playing_item = <PlayingItem as Deserialize>::deserialize(&response["item"])
-                .expect("PlayingItem should deserialize");
+            let playing_item = <PlayingItem as Deserialize>::deserialize(&response["item"])?;
 
             Ok(Event::UpdatePlayingItem(playing_item))
         }
@@ -416,35 +432,36 @@ async fn handle_kodi_command(
             Ok(Event::None)
         }
 
-        // Testing...
-        // Likely going to leave this as-is for now.
-        //   Might change db/api both to be under something like a 'data layer'
-        //   then the front end can just ask for data and module can figure it out
-        KodiCommand::VideoLibraryGetMovies => {
+        KodiCommand::VideoLibraryGetMovies { mut sender, limit } => {
             // I tested tokio::spawn here but kodi itself delays other requests while this runs
             //   (even from other connections/clients/etc)
-            // I think I can incremental (and check if needed) update
-            //   by sorting by dateadded and 'limit'ing
-            let response: Value = client
-                .request(
-                    "VideoLibrary.GetMovies",
-                    rpc_obj_params!("properties" = MINIMAL_MOVIE_PROPS),
+
+            let params = if limit != -1 {
+                let sort = ListSort {
+                    method: "dateadded",
+                    order: "descending",
+                };
+                let limits = ListLimits { end: limit };
+
+                rpc_obj_params!(
+                    "properties" = MINIMAL_MOVIE_PROPS,
+                    "sort" = sort,
+                    "limits" = limits
                 )
-                .await?;
+            } else {
+                rpc_obj_params!("properties" = MINIMAL_MOVIE_PROPS)
+            };
 
-            let movies = <Vec<MovieListItem> as Deserialize>::deserialize(&response["movies"])
-                .expect("MovieListItem should deserialize");
+            let response: Value = client.request("VideoLibrary.GetMovies", params).await?;
 
-            Ok(Event::UpdateMovieList(movies))
+            let movies = <Vec<MovieListItem> as Deserialize>::deserialize(&response["movies"])?;
+
+            let _ = sender.send(movies).await;
+
+            Ok(Event::None)
         }
 
-        // checking the data here...
         KodiCommand::VideoLibraryGetTVShows => {
-            // for now make this command do multiple queries to get all tv/season/ep data
-            // then put it all together and update the DB with a single object or giant array
-            // this is definitely NOT ideal.
-            // It takes a very long time for lots of episodes and hangs.
-            // if we do a data layer thing we can probably dynamically pull this?
             let response: Value = client
                 .request(
                     "VideoLibrary.GetTVShows",
@@ -452,59 +469,30 @@ async fn handle_kodi_command(
                 )
                 .await?;
 
-            let shows = <Vec<TVShowListItem> as Deserialize>::deserialize(&response["tvshows"])
-                .expect("TVShowListItem should deserialize");
+            let shows = <Vec<TVShowListItem> as Deserialize>::deserialize(&response["tvshows"])?;
             dbg!(&shows[0]);
 
-            let response: Value = client
-                .request(
-                    "VideoLibrary.GetSeasons",
-                    rpc_obj_params!("properties" = TV_SEASON_PROPS),
-                )
-                .await?;
-
-            let seasons = <Vec<TVSeasonListItem> as Deserialize>::deserialize(&response["seasons"])
-                .expect("TVShowListItem should deserialize");
-
-            // Much like movie list I tried parallelizing / spawning
-            // but it just causes lag for other clients and isn't faster
-            // likely better approach will be data layer + dynamic load
-            let mut episodes = Vec::new();
-            for show in &shows {
-                let response: Value = client
-                    .request(
-                        "VideoLibrary.GetEpisodes",
-                        rpc_obj_params!(
-                            "tvshowid" = show.tvshowid,
-                            "properties" = MINIMAL_EP_PROPS
-                        ),
-                    )
-                    .await?;
-
-                let mut eps =
-                    <Vec<TVEpisodeListItem> as Deserialize>::deserialize(&response["episodes"])
-                        .expect("TVShowListItem should deserialize");
-
-                episodes.append(&mut eps);
-            }
-            dbg!("End episodes query");
-
-            Ok(Event::UpdateTVList(shows, seasons, episodes))
+            // Ok(Event::UpdateTVList(shows, seasons, episodes))
+            Ok(Event::None)
         }
 
-        KodiCommand::VideoLibraryGetTVSeasons => {
+        KodiCommand::VideoLibraryGetTVSeasons {
+            mut sender,
+            tvshowid,
+        } => {
             // tvshowid is an optional req param so I can theoretically
             //   req all seasons then look up the tvshowid in the props
             let response: Value = client
                 .request(
                     "VideoLibrary.GetSeasons",
-                    rpc_obj_params!("properties" = TV_SEASON_PROPS),
+                    rpc_obj_params!("properties" = TV_SEASON_PROPS, "tvshowid" = tvshowid),
                 )
                 .await?;
 
-            let seasons = <Vec<TVSeasonListItem> as Deserialize>::deserialize(&response["seasons"])
-                .expect("TVShowListItem should deserialize");
-            dbg!(&seasons[0]);
+            let seasons =
+                <Vec<TVSeasonListItem> as Deserialize>::deserialize(&response["seasons"])?;
+
+            let _ = sender.send(seasons).await;
 
             Ok(Event::None)
         }
@@ -520,8 +508,7 @@ async fn handle_kodi_command(
                 .await?;
 
             let episodes =
-                <Vec<TVEpisodeListItem> as Deserialize>::deserialize(&response["episodes"])
-                    .expect("TVShowListItem should deserialize");
+                <Vec<TVEpisodeListItem> as Deserialize>::deserialize(&response["episodes"])?;
             dbg!(&episodes[0]);
 
             Ok(Event::None)
@@ -626,16 +613,16 @@ pub enum Event {
     Connected(Connection),
     Disconnected,
     None,
-    UpdateSources(Vec<Sources>),
-    UpdateDirList(Vec<DirList>, String),
+    // UpdateSources(Vec<Sources>),
+    // UpdateDirList(Vec<DirList>, String),
     UpdatePlayerProps(Option<PlayerProps>),
     UpdateKodiAppStatus(KodiAppStatus),
     UpdatePlayingItem(PlayingItem), // Might change to Option
     InputRequested(String),
-    UpdateMovieList(Vec<MovieListItem>),
-    UpdateTVList(
-        Vec<TVShowListItem>,
-        Vec<TVSeasonListItem>,
-        Vec<TVEpisodeListItem>,
-    ),
+    // UpdateMovieList(Vec<MovieListItem>),
+    // UpdateTVList(
+    //     Vec<TVShowListItem>,
+    //     Vec<TVSeasonListItem>,
+    //     Vec<TVEpisodeListItem>,
+    // ),
 }
