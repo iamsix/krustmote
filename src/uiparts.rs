@@ -373,6 +373,7 @@ pub(crate) fn left_menu<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> {
             row![
                 match krustmote.state {
                     State::Disconnected => icons::sync_disabled(),
+                    State::Offline(_) => icons::sync_disabled(),
                     _ => icons::sync(),
                 },
                 match &krustmote.kodi_status.server {
@@ -415,7 +416,10 @@ pub(crate) fn left_menu<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> {
 }
 
 pub(crate) fn remote<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
-    if let crate::State::Disconnected = krustmote.state {
+    if matches!(
+        krustmote.state,
+        crate::State::Disconnected | crate::State::Offline(_)
+    ) {
         return container("").into();
     }
     let red = Color::from_rgb8(255, 0, 0);

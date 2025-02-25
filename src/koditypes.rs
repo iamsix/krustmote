@@ -1,5 +1,6 @@
 use crate::data;
 use core::fmt::Debug;
+use fxhash;
 use iced::futures::channel::mpsc::Sender;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
@@ -55,12 +56,23 @@ pub enum KodiCommand {
         sender: Sender<Vec<MovieListItem>>,
         limit: i32,
     },
-    VideoLibraryGetTVShows,
+    VideoLibraryGetTVShows {
+        sender: Sender<Vec<TVShowListItem>>,
+        limit: i32,
+    },
+    VideoLibraryGetTVShowDetails {
+        sender: Sender<TVShowListItem>,
+        tvshowid: u32,
+    },
     VideoLibraryGetTVSeasons {
         sender: Sender<Vec<TVSeasonListItem>>,
         tvshowid: i32,
     },
-    VideoLibraryGetTVEpisodes,
+    VideoLibraryGetTVEpisodes {
+        sender: Sender<Vec<TVEpisodeListItem>>,
+        limit: i32,
+        tvshowid: u32,
+    },
 
     // only used for testing/debug:
     PlayerGetPlayingItemDebug(u8),
@@ -80,7 +92,7 @@ pub trait IntoListData {
     fn source_data(&self) -> &'static str;
     fn dyn_clone(&self) -> Box<dyn IntoListData + Send>;
     fn into_listdata(&self) -> crate::ListData;
-    fn get_art_data(&self, http_url: &String) -> Pic;
+    fn get_art_data(&self, server: &Option<Arc<KodiServer>>) -> Pic;
     fn label_contains(&self, find: &String) -> bool;
 }
 
@@ -96,11 +108,12 @@ impl Clone for Box<dyn IntoListData + Send> {
     }
 }
 
+#[derive(Default, Debug)]
 pub struct Pic {
-    pub url: String,
+    pub url: Option<String>,
     // pub namehash: String,
-    // pub namehash: usize, //? - on one hand usize seems more efficient
-    //                          otoh hex string could be nice for some hax
+    pub namehash: usize, //? - on one hand usize seems more efficient
+    //                         otoh hex string could be nice for filename hax
     pub h: u32,
     pub w: u32,
 }
@@ -320,14 +333,9 @@ impl IntoListData for Sources {
         }
     }
 
-    fn get_art_data(&self, _: &String) -> Pic {
+    fn get_art_data(&self, _: &Option<Arc<KodiServer>>) -> Pic {
         // let hash = fxhash::hash("");
-        Pic {
-            url: "".to_string(),
-            // namehash: hash, // (or might use special '0' or something)
-            h: 0,
-            w: 0,
-        }
+        Pic::default()
     }
 
     fn label_contains(&self, find: &String) -> bool {
@@ -469,38 +477,38 @@ impl IntoListData for DirList {
         }
     }
 
-    fn get_art_data(&self, http_url: &String) -> Pic {
-        if self.type_ == VideoType::Episode && self.art.thumb.is_some() {
-            let thumb = self.art.thumb.as_ref().unwrap();
-            let thumb = urlencoding::encode(thumb.as_str());
-            // let hash = fxhash::hash(&thumb);
-            Pic {
-                url: format!("{}/image/{}", http_url, thumb),
-                w: 192,
-                h: 108,
-            }
+    fn get_art_data(&self, svr: &Option<Arc<KodiServer>>) -> Pic {
+        let (path, w, h) = if self.type_ == VideoType::Episode && self.art.thumb.is_some() {
+            (self.art.thumb.as_ref().unwrap().as_str(), 192, 108)
         } else if self.art.poster.is_some() {
-            let poster = self.art.poster.as_ref().unwrap();
-            let poster = urlencoding::encode(poster.as_str());
-            // let hash = fxhash::hash(&poster);
-            Pic {
-                url: format!("{}/image/{}", http_url, poster),
-                w: 80,
-                h: 120,
-            }
+            (self.art.poster.as_ref().unwrap().as_str(), 80, 120)
         } else {
-            let icon = if self.filetype.eq_ignore_ascii_case("directory") {
-                urlencoding::encode("image://DefaultFolder.png/")
+            let (icon_path, namehash) = if self.filetype.eq_ignore_ascii_case("directory") {
+                ("image://DefaultFolder.png/", 1)
             } else {
-                urlencoding::encode("image://DefaultFile.png/")
+                ("image://DefaultFile.png/", 2)
             };
-            // might set hash specifically to these filenames for the defaults.
-            Pic {
-                url: format!("{}/image/{}", http_url, icon),
-                // hashname: "DefaultFile" / "DefaultFolder"
+            return Pic {
+                url: svr
+                    .as_ref()
+                    .map(|s| format!("{}/image/{}", s.http_url(), icon_path)),
+                namehash,
                 h: 120,
                 w: 80,
-            }
+            };
+        };
+
+        let encoded_path = urlencoding::encode(path);
+        let url = svr
+            .as_ref()
+            .map(|s| format!("{}/image/{}", s.http_url(), encoded_path));
+        let namehash = fxhash::hash(&encoded_path);
+
+        Pic {
+            url,
+            namehash,
+            w,
+            h,
         }
     }
 
@@ -735,8 +743,6 @@ impl IntoListData for TVShowListItem {
     }
 
     fn into_listdata(&self) -> crate::ListData {
-        // This is where it gets complicated.
-        // I need to do a DBReq here to make it show the seasons - supply tvshow
         let on_click = if self.season == 1 {
             crate::Message::GetData(data::Get::TVEpisodes(self.tvshowid, 1))
         } else {
@@ -754,21 +760,21 @@ impl IntoListData for TVShowListItem {
         }
     }
 
-    fn get_art_data(&self, http_url: &String) -> Pic {
+    fn get_art_data(&self, svr: &Option<Arc<KodiServer>>) -> Pic {
         if self.art.poster.is_some() {
             let poster = self.art.poster.as_ref().unwrap();
             let poster = urlencoding::encode(poster.as_str());
+            let namehash = fxhash::hash(&poster);
             Pic {
-                url: format!("{}/image/{}", http_url, poster),
+                url: svr
+                    .as_ref()
+                    .map(|s| format!("{}/image/{}", s.http_url(), poster)),
+                namehash,
                 w: 80,
                 h: 120,
             }
         } else {
-            Pic {
-                url: "".to_string(),
-                h: 0,
-                w: 0,
-            }
+            Pic::default()
         }
     }
 
@@ -788,9 +794,6 @@ impl IntoListData for TVSeasonListItem {
     }
 
     fn into_listdata(&self) -> crate::ListData {
-        // This is where it gets complicated.
-        // I need to do a DBReq here to make it show the episodes with the tvshowid, season
-
         let on_click = crate::Message::GetData(data::Get::TVEpisodes(self.tvshowid, self.season));
 
         crate::ListData {
@@ -803,10 +806,13 @@ impl IntoListData for TVSeasonListItem {
         }
     }
 
-    fn get_art_data(&self, http_url: &String) -> Pic {
+    fn get_art_data(&self, svr: &Option<Arc<KodiServer>>) -> Pic {
         let poster = urlencoding::encode("image://DefaultFolder.png/");
         Pic {
-            url: format!("{}/image/{}", http_url, poster),
+            url: svr
+                .as_ref()
+                .map(|s| format!("{}/image/{}", s.http_url(), poster)),
+            namehash: 1,
             w: 80,
             h: 120,
         }
@@ -851,21 +857,21 @@ impl IntoListData for TVEpisodeListItem {
         }
     }
 
-    fn get_art_data(&self, http_url: &String) -> Pic {
+    fn get_art_data(&self, svr: &Option<Arc<KodiServer>>) -> Pic {
         if self.art.thumb.is_some() {
             let thumb = self.art.thumb.as_ref().unwrap();
             let thumb = urlencoding::encode(thumb.as_str());
+            let namehash = fxhash::hash(&thumb);
             Pic {
-                url: format!("{}/image/{}", http_url, thumb),
+                url: svr
+                    .as_ref()
+                    .map(|s| format!("{}/image/{}", s.http_url(), thumb)),
+                namehash,
                 w: 192,
                 h: 108,
             }
         } else {
-            Pic {
-                url: "".to_string(),
-                h: 0,
-                w: 0,
-            }
+            Pic::default()
         }
     }
 
@@ -935,21 +941,21 @@ impl IntoListData for MovieListItem {
         }
     }
 
-    fn get_art_data(&self, http_url: &String) -> Pic {
+    fn get_art_data(&self, svr: &Option<Arc<KodiServer>>) -> Pic {
         if self.art.poster.is_some() {
             let poster = self.art.poster.as_ref().unwrap();
             let poster = urlencoding::encode(poster.as_str());
+            let namehash = fxhash::hash(&poster);
             Pic {
-                url: format!("{}/image/{}", http_url, poster),
+                url: svr
+                    .as_ref()
+                    .map(|s| format!("{}/image/{}", s.http_url(), poster)),
+                namehash,
                 w: 80,
                 h: 120,
             }
         } else {
-            Pic {
-                url: "".to_string(),
-                h: 0,
-                w: 0,
-            }
+            Pic::default()
         }
     }
 
@@ -1042,7 +1048,7 @@ pub struct ItemVideo {
     stereomode: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct KodiServer {
     pub id: u8,
     pub name: String,

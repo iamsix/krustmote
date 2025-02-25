@@ -69,7 +69,7 @@ impl Connection {
 //output messages to UI
 #[derive(Debug, Clone)]
 pub enum DataEvent {
-    Connected(Connection),
+    Offline(Connection),
     Online(Connection, client::Connection),
     ListData {
         title: String,
@@ -90,6 +90,7 @@ pub struct Data {
     // I'd need to decouple that part of the UI during grab.
     kodi_status: crate::KodiStatus,
     db: db::SqlConnection,
+    kodi_connected: bool,
     client: client::Connection,
     clientrx: Receiver<client::Event>,
     // tv crumb data?
@@ -124,8 +125,11 @@ impl Data {
         let _ = conn.send(db::SqlCommand::GetServers { sender: tx });
 
         let kodiserver = rx.await?;
-        // !!!!!!!!!!!!!!!TODO!!!!!!!!!!!  This needs to deal with empty vec...
-        let kodiserver = Arc::new(kodiserver[0].clone());
+        let kodiserver = if kodiserver.is_empty() {
+            Arc::new(KodiServer::default())
+        } else {
+            Arc::new(kodiserver[0].clone())
+        };
         let kodiserver2 = Arc::clone(&kodiserver);
 
         let (koditx, mut kodirx) = channel(100);
@@ -134,8 +138,9 @@ impl Data {
         });
 
         let svr = kodirx.select_next_some().await;
-        let client = match svr {
-            Event::Connected(client) => client,
+        let (client, kodi_connected) = match svr {
+            Event::Connected(client) => (client, true),
+            Event::Disconnected(client) => (client, false),
             _ => return Err("Failed to connect to kodi".into()),
         };
 
@@ -147,6 +152,7 @@ impl Data {
         Ok(Data {
             kodi_status,
             db: conn,
+            kodi_connected,
             client,
             clientrx: kodirx,
         })
@@ -154,26 +160,30 @@ impl Data {
 
     async fn handle_connection(&mut self, mut output: Sender<DataEvent>) -> ! {
         let (sender, mut reciever) = channel(100);
-        let _ = output
-            .send(DataEvent::Online(
-                Connection(sender.clone()),
-                self.client.clone(),
-            ))
-            .await;
+        let item = if self.kodi_connected {
+            DataEvent::Online(Connection(sender.clone()), self.client.clone())
+        } else {
+            DataEvent::Offline(Connection(sender.clone()))
+        };
+        let _ = output.send(item).await;
         loop {
             select! {
                 kodi_msg = self.clientrx.select_next_some() => {
                     match &kodi_msg {
                         Event::Connected(kodi) => {
                             self.client = kodi.clone();
+                            self.kodi_connected = true;
                             let _ = output.send(
                                 DataEvent::Online(Connection(sender.clone()),
                                 kodi.clone())
                             ).await;
                         }
-                        Event::Disconnected => {
+                        Event::Disconnected(kodi) => {
+                            self.client = kodi.clone();
+                            self.kodi_connected = false;
+                            self.kodi_status.active_player_id = None;
                             let _ = output.send(
-                                DataEvent::Connected(Connection(sender.clone()))
+                                DataEvent::Offline(Connection(sender.clone()))
                             ).await;
                         }
                         _ => {}
@@ -207,6 +217,11 @@ impl Data {
                     self.kodi_status.active_player_id = None;
                 }
                 Some(props) => {
+                    if self.kodi_status.active_player_id.is_none() {
+                        self.client.send(KodiCommand::PlayerGetPlayingItem(
+                            props.player_id.expect("player_id should exist"),
+                        ));
+                    }
                     self.kodi_status.active_player_id = props.player_id;
                     self.kodi_status.player_props = props;
                 }
@@ -285,6 +300,10 @@ impl Data {
                 let _ = self
                     .client
                     .send(KodiCommand::ChangeServer(Arc::new(srv.clone())));
+                self.kodi_status.server = Some(Arc::new(srv.clone()));
+                // Might change this to send KodiStatus instead.
+
+                // should send out DataEvent::Connected here too?
                 let _ = output.send(DataEvent::Servers(vec![srv])).await;
                 Ok(())
             }
@@ -294,31 +313,8 @@ impl Data {
                 //  TODO - Consider datestamping my data itself (date retrieved)
                 //         Full refresh if stale + date mismatch.
                 //         not sure what 'stale' would be..
-                // -----------
-                // I think I ask db for latest date, ask kodi for latest date
-                // compare, then pull resources from there?
-                let (tx, rx) = oneshot::channel();
-                let _ = self
-                    .db
-                    .send(db::SqlCommand::GetMostRecentMovieDate { sender: tx });
-                let dbdate = rx.await?;
-
-                let (tx, mut rx) = channel(1);
-                let _ = self.client.send(KodiCommand::VideoLibraryGetMovies {
-                    sender: tx,
-                    limit: 20,
-                });
-                let recentmovies = rx.select_next_some().await;
-
-                if !(recentmovies[0].dateadded == dbdate) {
-                    // might change this to let cmd = if ... { command }
-                    if recentmovies.iter().any(|mv| mv.dateadded == dbdate) {
-                        self.db.send(db::SqlCommand::InsertMovies(recentmovies));
-                    } else {
-                        // if it's not I probably just want to do a full list refresh
-                        todo!("Update the db here - not recent");
-                    }
-                }
+                // -------------
+                self.sync_movies().await;
 
                 let (tx, rx) = oneshot::channel();
                 let _ = self.db.send(db::SqlCommand::GetMovieList { sender: tx });
@@ -335,6 +331,8 @@ impl Data {
             }
 
             Get::TVShows => {
+                self.sync_tvshows().await;
+
                 let (tx, rx) = oneshot::channel();
                 let _ = self.db.send(db::SqlCommand::GetTVShowList { sender: tx });
                 let data = rx.await?;
@@ -350,13 +348,25 @@ impl Data {
             }
 
             Get::TVSeasons(tvshowid) => {
-                let (tx, rx) = oneshot::channel();
-                let _ = self.db.send(db::SqlCommand::GetTVShowItem {
-                    sender: tx,
-                    tvshowid,
-                });
-                let item = rx.await?;
-                // pull show item from kodi to do the comparison?
+                let item = if self.kodi_connected {
+                    let (tx, mut rx) = channel(1);
+                    let _ = self.client.send(KodiCommand::VideoLibraryGetTVShowDetails {
+                        sender: tx,
+                        tvshowid,
+                    });
+                    let show = rx.next().await.expect("Should work if kodi online..");
+                    // update the show in db since we loaded it anyway.
+                    self.db
+                        .send(db::SqlCommand::InsertTVShows(vec![show.clone()]));
+                    show
+                } else {
+                    let (tx, rx) = oneshot::channel();
+                    let _ = self.db.send(db::SqlCommand::GetTVShowItem {
+                        sender: tx,
+                        tvshowid,
+                    });
+                    rx.await?
+                };
 
                 let (tx, rx) = oneshot::channel();
                 let _ = self.db.send(db::SqlCommand::GetTVSeasons {
@@ -365,13 +375,7 @@ impl Data {
                 });
                 let mut data = rx.await?;
 
-                // !!!!!!!!!!!!!!!!!!TODO!!!!!!!!!!!!! this check is wrong...
-                // I'm checking the db against itself to see if there's no data
-                // but I need to check against kodi instead to see if new data.
-                // technically the db show will update? (not sure of the conditions when..)
-                // This one is kind of odd cause there's almost no need to db it.
-                if item.season as usize != data.len() {
-                    dbg!("DOING SEASON UPDATE");
+                if item.season as usize != data.len() && self.kodi_connected {
                     // for seasons pull all and always update, small data anyway
                     let (tx, mut rx) = channel(1);
                     let _ = self.client.send(KodiCommand::VideoLibraryGetTVSeasons {
@@ -386,14 +390,16 @@ impl Data {
                     data = newseasons.into_iter().map(|v| Box::new(v) as _).collect();
                 };
 
-                let all = TVSeasonListItem {
-                    seasonid: 0,
-                    tvshowid,
-                    season: -1,
-                    title: "All Seasons".into(),
-                    episode: item.episode,
-                };
-                data.insert(0, Box::new(all));
+                if !data.is_empty() {
+                    let all = TVSeasonListItem {
+                        seasonid: 0,
+                        tvshowid,
+                        season: -1,
+                        title: "All Seasons".into(),
+                        episode: item.episode,
+                    };
+                    data.insert(0, Box::new(all));
+                }
 
                 let _ = output
                     .send(DataEvent::ListData {
@@ -406,12 +412,22 @@ impl Data {
             }
 
             Get::TVEpisodes(tvshowid, season) => {
+                // due to seasons this one is odd to sync
+                // if I ask for last-20 I'm basically repulling the whole last season
+                // though I am doing the dateadded check first, so stil a fastpath?
+                // seasons complicate it...
+                // for now I'm just going to treat the whole show as 1 item to sync.
+                self.sync_tvepisodes(tvshowid).await;
+
+                // pull show item from kodi if online and update db?
+                // necessary due to 1-season shows skipping season view?
                 let (tx, rx) = oneshot::channel();
                 let _ = self.db.send(db::SqlCommand::GetTVShowItem {
                     sender: tx,
                     tvshowid,
                 });
                 let item = rx.await?;
+
                 let title = if season == -1 {
                     format!("{} > All Seasons", item.title)
                 } else {
@@ -432,5 +448,94 @@ impl Data {
                 Ok(())
             }
         }
+    }
+
+    // might make this also take sample size (instead of hardcoding 20)
+    async fn sync_items<T, K, D, I, R>(
+        &mut self,
+        kodi_command: K,
+        date_added: D,
+        db_command: I,
+        recent_command: R,
+    ) where
+        T: Clone + Send + 'static, // Type of items (Movie / TVShow / etc)
+        K: Fn(Sender<Vec<T>>, i32) -> KodiCommand, // VideoLibraryGetT command
+        D: Fn(&T, &String) -> bool, // bool T.dateadded == dbdate
+        I: Fn(Vec<T>) -> db::SqlCommand, // Insert DB command
+        R: Fn(oneshot::Sender<String>) -> db::SqlCommand, // GetRecentT DB cmd
+    {
+        if !self.kodi_connected {
+            return;
+        }
+
+        let (tx, rx) = oneshot::channel();
+        let _ = self.db.send(recent_command(tx)); // GetMostRecentTDate
+        let dbdate_result = rx.await;
+
+        let (kodi_tx, mut kodi_rx) = channel(1);
+
+        let items = match dbdate_result {
+            Ok(dbdate) => {
+                self.client.send(kodi_command(kodi_tx.clone(), 20)); // sample
+
+                let recent_items = kodi_rx
+                    .next()
+                    .await
+                    .expect("Kodi should be online/working if this was called");
+
+                if !recent_items.iter().any(|item| date_added(&item, &dbdate)) {
+                    kodi_command(kodi_tx, -1); // All items
+                    kodi_rx.next().await
+                } else {
+                    if date_added(&recent_items[0], &dbdate) {
+                        None
+                    } else {
+                        Some(recent_items)
+                    }
+                }
+            }
+            _ => {
+                self.client.send(kodi_command(kodi_tx, -1)); // All items
+                kodi_rx.next().await
+            }
+        };
+
+        if let Some(items) = items {
+            let _ = self.db.send(db_command(items)); // InsertT to db
+        }
+    }
+
+    async fn sync_movies(&mut self) {
+        self.sync_items(
+            |sender, limit| KodiCommand::VideoLibraryGetMovies { sender, limit },
+            |item, dbdate| item.dateadded == *dbdate,
+            |movies| db::SqlCommand::InsertMovies(movies),
+            |sender| db::SqlCommand::GetMostRecentMovieDate { sender },
+        )
+        .await;
+    }
+
+    async fn sync_tvshows(&mut self) {
+        self.sync_items(
+            |tx, limit| KodiCommand::VideoLibraryGetTVShows { sender: tx, limit },
+            |item, dbdate| item.dateadded == *dbdate,
+            |shows| db::SqlCommand::InsertTVShows(shows),
+            |sender| db::SqlCommand::GetMostRecentShowDate { sender },
+        )
+        .await;
+    }
+
+    async fn sync_tvepisodes(&mut self, tvshowid: u32) {
+        self.sync_items(
+            |sender, limit| KodiCommand::VideoLibraryGetTVEpisodes {
+                sender,
+                limit,
+                tvshowid,
+            },
+            |item, dbdate| item.dateadded == *dbdate,
+            |episodes| db::SqlCommand::InsertTVEpisodes(episodes),
+            |sender| db::SqlCommand::GetMostRecentEpisodeDate { sender, tvshowid },
+        )
+        .await;
     }
 }

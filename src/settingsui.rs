@@ -10,7 +10,6 @@ use crate::koditypes::KodiServer;
 
 #[derive(Clone)]
 pub struct Settings {
-    // DBSend? Not sure if I want to bypass that entirely
     // Serverlist/ etc to select servers eventually
     edit_server_name: String,
     edit_server_ip: String,

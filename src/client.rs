@@ -60,6 +60,7 @@ async fn handle_connection(mut output: Sender<Event>, mut server: Arc<KodiServer
 
     loop {
         match &mut state {
+            // Need to decouple client MPSC from client websocket connection here.
             State::Disconnected => {
                 match WsClientBuilder::default()
                     .build(server.websocket_url())
@@ -80,9 +81,20 @@ async fn handle_connection(mut output: Sender<Event>, mut server: Arc<KodiServer
                     }
                     Err(err) => {
                         dbg!(err);
-                        let _ = output.send(Event::Disconnected).await;
+                        let (sender, reciever) = channel(100);
+                        let _ = output.send(Event::Disconnected(Connection(sender))).await;
+                        state = State::Offline(reciever);
                         tokio::time::sleep(Duration::from_secs(5)).await;
                     }
+                }
+            }
+
+            State::Offline(reciever) => {
+                let message = reciever.select_next_some().await;
+                if let KodiCommand::ChangeServer(srv) = message {
+                    server = srv;
+                    state = State::Disconnected;
+                    // let _ = output.send(Event::Disconnected);
                 }
             }
 
@@ -144,7 +156,7 @@ async fn handle_connection(mut output: Sender<Event>, mut server: Arc<KodiServer
                         if let KodiCommand::ChangeServer(srv) = message {
                             server = srv;
                             state = State::Disconnected;
-                            let _ = output.send(Event::Disconnected);
+                            // let _ = output.send(Event::Disconnected);
                             continue;
                         };
 
@@ -222,7 +234,8 @@ async fn handle_kodi_command(
     client: &Client,
 ) -> Result<Event, Box<dyn Error + Send + Sync>> {
     match message {
-        KodiCommand::ChangeServer(_) => Ok(Event::Disconnected),
+        // this was already handled before it got here.
+        KodiCommand::ChangeServer(_) => Ok(Event::None), //(Event::Disconnected),
 
         KodiCommand::GetDirectory {
             mut sender,
@@ -456,23 +469,51 @@ async fn handle_kodi_command(
 
             let movies = <Vec<MovieListItem> as Deserialize>::deserialize(&response["movies"])?;
 
-            let _ = sender.send(movies).await;
+            sender.send(movies).await?;
 
             Ok(Event::None)
         }
 
-        KodiCommand::VideoLibraryGetTVShows => {
+        KodiCommand::VideoLibraryGetTVShows { mut sender, limit } => {
+            let params = if limit != -1 {
+                let sort = ListSort {
+                    method: "dateadded",
+                    order: "descending",
+                };
+                let limits = ListLimits { end: limit };
+
+                rpc_obj_params!(
+                    "properties" = MINIMAL_TV_PROPS,
+                    "sort" = sort,
+                    "limits" = limits
+                )
+            } else {
+                rpc_obj_params!("properties" = MINIMAL_TV_PROPS)
+            };
+            let response: Value = client.request("VideoLibrary.GetTVShows", params).await?;
+
+            let shows = <Vec<TVShowListItem> as Deserialize>::deserialize(&response["tvshows"])?;
+
+            sender.send(shows).await?;
+
+            Ok(Event::None)
+        }
+
+        KodiCommand::VideoLibraryGetTVShowDetails {
+            mut sender,
+            tvshowid,
+        } => {
+            // I think this will fail cause it always sends a vec
             let response: Value = client
                 .request(
-                    "VideoLibrary.GetTVShows",
-                    rpc_obj_params!("properties" = MINIMAL_TV_PROPS),
+                    "VideoLibrary.GetTVShowDetails",
+                    rpc_obj_params!("tvshowid" = tvshowid, "properties" = MINIMAL_TV_PROPS),
                 )
                 .await?;
 
-            let shows = <Vec<TVShowListItem> as Deserialize>::deserialize(&response["tvshows"])?;
-            dbg!(&shows[0]);
+            let show = <TVShowListItem as Deserialize>::deserialize(&response["tvshowdetails"])?;
+            sender.send(show).await?;
 
-            // Ok(Event::UpdateTVList(shows, seasons, episodes))
             Ok(Event::None)
         }
 
@@ -492,24 +533,41 @@ async fn handle_kodi_command(
             let seasons =
                 <Vec<TVSeasonListItem> as Deserialize>::deserialize(&response["seasons"])?;
 
-            let _ = sender.send(seasons).await;
+            sender.send(seasons).await?;
 
             Ok(Event::None)
         }
 
-        KodiCommand::VideoLibraryGetTVEpisodes => {
+        KodiCommand::VideoLibraryGetTVEpisodes {
+            mut sender,
+            limit,
+            tvshowid,
+        } => {
             // similar to movies can probably increment with dateadded / limit
             // note tvshowid seems optional but without limit would be huge
-            let response: Value = client
-                .request(
-                    "VideoLibrary.GetEpisodes",
-                    rpc_obj_params!("tvshowid" = 1, "properties" = MINIMAL_EP_PROPS),
+            let params = if limit != -1 {
+                let sort = ListSort {
+                    method: "dateadded",
+                    order: "descending",
+                };
+                let limits = ListLimits { end: limit };
+
+                rpc_obj_params!(
+                    "tvshowid" = tvshowid,
+                    "properties" = MINIMAL_EP_PROPS,
+                    "limits" = limits,
+                    "sort" = sort
                 )
-                .await?;
+            } else {
+                rpc_obj_params!("tvshowid" = tvshowid, "properties" = MINIMAL_EP_PROPS)
+            };
+
+            let response: Value = client.request("VideoLibrary.GetEpisodes", params).await?;
 
             let episodes =
                 <Vec<TVEpisodeListItem> as Deserialize>::deserialize(&response["episodes"])?;
-            dbg!(&episodes[0]);
+
+            sender.send(episodes).await?;
 
             Ok(Event::None)
         }
@@ -606,12 +664,13 @@ async fn handle_notification(
 enum State {
     Disconnected,
     Connected(Client, Receiver<KodiCommand>),
+    Offline(Receiver<KodiCommand>),
 }
 
 #[derive(Debug, Clone)]
 pub enum Event {
     Connected(Connection),
-    Disconnected,
+    Disconnected(Connection),
     None,
     // UpdateSources(Vec<Sources>),
     // UpdateDirList(Vec<DirList>, String),

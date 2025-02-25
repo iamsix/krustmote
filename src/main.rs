@@ -5,7 +5,6 @@ use iced::widget::{opaque, text_input};
 use iced::{event, font, window, Element, Event, Length, Subscription, Task as Command};
 
 use ::image as imagelib;
-use fxhash;
 use reqwest;
 use std::path::Path;
 use tokio::fs;
@@ -315,7 +314,7 @@ impl Krustmote {
             Message::DataEvent(event) => {
                 // dbg!(&event);
                 match event {
-                    data::DataEvent::Connected(connection) => {
+                    data::DataEvent::Offline(connection) => {
                         self.kodi_status.active_player_id = None;
                         self.state = State::Offline(connection);
 
@@ -438,7 +437,6 @@ impl Krustmote {
 
     fn view(&self) -> Element<Message> {
         if let ContentArea::Settings(set) = &self.content_area {
-            // TODO: modify this so that the left_menu is on it stil..
             return set.view().map(Message::Settings);
         };
         let content = column![
@@ -490,12 +488,6 @@ impl Krustmote {
 
     fn update_virtual_list(&mut self) {
         let sem = Arc::new(&SEM);
-        let http_url = if let Some(server) = &self.kodi_status.server {
-            server.http_url()
-        } else {
-            // TODO change get_art_data to accept None for server
-            panic!("This should never be called if there's no server")
-        };
 
         self.item_list.filtered_count = 0;
         for (i, file) in self
@@ -513,8 +505,8 @@ impl Krustmote {
                 if self.item_list.virtual_list.contains_key(&i) {
                     continue;
                 }
-                let pic = file.get_art_data(&http_url);
-                let pic = Krustmote::get_art(&sem, pic);
+                let pic = file.get_art_data(&self.kodi_status.server);
+                let pic = self.get_art(&sem, pic);
                 let mut item = file.into_listdata();
                 item.image = pic;
                 self.item_list.virtual_list.insert(i, item);
@@ -529,33 +521,36 @@ impl Krustmote {
 
     // This entire thing might be better using worker oneshots/etc
     // but iced 0.14 will have 'Straw' which is perfect for something like this
-    fn get_art(sem: &Arc<&'static Semaphore>, pic: Pic) -> Arc<OnceLock<image::Handle>> {
-        if !pic.url.is_empty() {
+    fn get_art(&self, sem: &Arc<&'static Semaphore>, pic: Pic) -> Arc<OnceLock<image::Handle>> {
+        let online = matches!(self.state, State::Connected(_, _));
+        if pic.url.is_some() {
             // Check cache hit before semaphore await for possible 'early return'
             // This semaphore limits it to 10 hits on the server at a time.
+            // Note this permit doesn't await yet, had to define here for async move.
             let permit = Arc::clone(sem).acquire(); // .acquire_owned();
             let lock = Arc::new(OnceLock::new());
             let c_lock = Arc::clone(&lock);
             tokio::spawn(async move {
-                // hashing this WITH server url is actually not ideal
-                // as even shared databases will then each have their own cached images
-                // should hash the original art URL during get_art_data and make it a field in 'pic'
-                // technically even unshared db with same art url should have same pic and cache hit
-                let hash = fxhash::hash(&pic.url);
-                let path = format!("./imagecache/{:0x}.jpg", hash);
+                let path = format!("./imagecache/{:0x}.jpg", pic.namehash);
                 let path = Path::new(&path);
 
                 let res = match Krustmote::cache_hit(&path).await {
                     Ok(val) => Ok(val),
                     Err(_) => {
-                        let _permit = permit.await;
-                        Krustmote::download_pic(pic, &path).await
+                        if online {
+                            let _permit = permit.await;
+                            Krustmote::download_pic(pic, &path).await
+                        } else {
+                            Err("Not online".into())
+                        }
                     }
                 };
                 if let Ok(res) = res {
                     let _ = c_lock.set(res);
-                } else {
-                    dbg!(res.err());
+                } else if let Err(err) = res {
+                    if err.to_string() != "Not online" {
+                        dbg!(err);
+                    }
                 };
             });
             lock
@@ -566,31 +561,40 @@ impl Krustmote {
 
     // TODO! Proper path support! (if the dir doesn't exist this will fail)
     async fn cache_hit(path: &Path) -> Result<image::Handle, Box<dyn Error + Send + Sync>> {
-        let img = if fs::metadata(path).await.is_ok() {
-            imagelib::open(path)?
+        let path = if fs::metadata(path).await.is_ok() {
+            path
         } else if fs::metadata(path.with_extension("png")).await.is_ok() {
-            imagelib::open(path.with_extension("png"))?
+            &path.with_extension("png")
         } else {
             return Err("No cache hit".into());
         };
-        let w = img.width();
-        let h = img.height();
-        let img = img.into_rgba8().to_vec();
-        Ok(image::Handle::from_rgba(w, h, img))
+
+        Ok(image::Handle::from_path(path))
     }
 
     async fn download_pic(
         pic: Pic,
         cache_path: &Path,
     ) -> Result<image::Handle, Box<dyn Error + Send + Sync>> {
-        let img = reqwest::get(&pic.url).await?.error_for_status()?;
+        let url = pic.url.expect("Must exist if gotten here");
+        let img = reqwest::get(url).await?.error_for_status()?;
         let img = img.bytes().await?;
+
+        let fmt = imagelib::guess_format(&img)?;
+        let path = match fmt {
+            imagelib::ImageFormat::Jpeg => cache_path.with_extension("jpg"),
+            imagelib::ImageFormat::Png => cache_path.with_extension("png"),
+            _ => {
+                panic!("Unknwown format {:?}", fmt)
+            }
+        };
 
         let img = imagelib::load_from_memory(&img)?;
         let img = img.resize_to_fill(pic.w, pic.h, imagelib::imageops::FilterType::Nearest);
-        img.save(cache_path)?;
-        let img = img.into_rgba8().to_vec();
 
+        img.save(path)?;
+
+        let img = img.into_rgba8().to_vec();
         Ok(image::Handle::from_rgba(pic.w, pic.h, img))
     }
 }

@@ -2,7 +2,7 @@ use iced::futures::channel::mpsc::{channel, Receiver, Sender};
 use iced::futures::channel::oneshot;
 use iced::futures::StreamExt;
 
-use rusqlite::params;
+use tokio_rusqlite::params;
 use tokio_rusqlite::Connection;
 
 use crate::koditypes::*;
@@ -37,9 +37,18 @@ pub enum SqlCommand {
     GetMostRecentMovieDate {
         sender: oneshot::Sender<String>,
     },
+    GetMostRecentShowDate {
+        sender: oneshot::Sender<String>,
+    },
+    GetMostRecentEpisodeDate {
+        sender: oneshot::Sender<String>,
+        tvshowid: u32,
+    },
 
     InsertMovies(Vec<MovieListItem>),
+    InsertTVShows(Vec<TVShowListItem>),
     InsertTVSeasons(Vec<TVSeasonListItem>),
+    InsertTVEpisodes(Vec<TVEpisodeListItem>),
 }
 
 #[derive(Debug, Clone)]
@@ -122,16 +131,14 @@ async fn handle_command(
 
         SqlCommand::InsertMovies(movies) => insert_movies(conn, movies).await,
 
+        SqlCommand::InsertTVShows(tvshows) => insert_tvshows(conn, tvshows).await,
+
+        SqlCommand::InsertTVSeasons(seasons) => insert_tvseasons(conn, seasons).await,
+
+        SqlCommand::InsertTVEpisodes(episodes) => insert_tvepisodes(conn, episodes).await,
+
         SqlCommand::GetMovieList { sender } => get_movie_list(conn, sender).await,
 
-        SqlCommand::GetMostRecentMovieDate { sender } => {
-            get_most_recent_movie_datestamp(conn, sender).await
-        }
-        // SqlCommand::InsertTVShows(tvshows, seasons, episodes) => {
-        //     insert_tvshows(conn, tvshows).await?;
-        //     insert_tvseasons(conn, seasons).await?;
-        //     insert_tvepisodes(conn, episodes).await
-        // }
         SqlCommand::GetTVShowList { sender } => get_tv_show_list(conn, sender).await,
 
         SqlCommand::GetTVSeasons { sender, tvshowid } => {
@@ -148,7 +155,17 @@ async fn handle_command(
             get_tv_show_item(conn, sender, tvshowid).await
         }
 
-        SqlCommand::InsertTVSeasons(seasons) => insert_tvseasons(conn, seasons).await,
+        SqlCommand::GetMostRecentMovieDate { sender } => {
+            get_most_recent_movie_datestamp(conn, sender).await
+        }
+
+        SqlCommand::GetMostRecentShowDate { sender } => {
+            get_most_recent_tvshow_datestamp(conn, sender).await
+        }
+
+        SqlCommand::GetMostRecentEpisodeDate { sender, tvshowid } => {
+            get_most_recent_episode_datestamp(conn, sender, tvshowid).await
+        }
     }
 }
 
@@ -194,6 +211,25 @@ async fn get_tv_show_item(
         .await?;
     let _ = sender.send(item_result);
 
+    Ok(())
+}
+
+// technically tvshowitem would work for this
+// but it's made for inputting tvshowid so it'd be a hack.
+async fn get_most_recent_tvshow_datestamp(
+    conn: &Connection,
+    sender: oneshot::Sender<String>,
+) -> Result<(), tokio_rusqlite::Error> {
+    let last_date = conn
+        .call(|conn| {
+            let q = "SELECT dateadded FROM tvshowlist ORDER BY dateadded DESC LIMIT 1";
+            let date = conn.query_row(q, [], |row| row.get(0))?;
+            Ok::<String, tokio_rusqlite::Error>(date)
+        })
+        .await?;
+
+    // note if this fails the sender is cancelled.
+    let _ = sender.send(last_date);
     Ok(())
 }
 
@@ -270,6 +306,26 @@ async fn get_tv_seasons_list(
         .await?;
 
     let _ = sender.send(seasons_result);
+    Ok(())
+}
+
+async fn get_most_recent_episode_datestamp(
+    conn: &Connection,
+    sender: oneshot::Sender<String>,
+    tvshowid: u32,
+) -> Result<(), tokio_rusqlite::Error> {
+    let last_date = conn
+        .call(move |conn| {
+            let q = "SELECT dateadded FROM tvepisodelist WHERE 
+                                tvshowid =?1
+                            ORDER BY dateadded DESC LIMIT 1";
+            let date = conn.query_row(q, [tvshowid], |row| row.get(0))?;
+            Ok::<String, tokio_rusqlite::Error>(date)
+        })
+        .await?;
+
+    // note if this fails the sender is cancelled.
+    let _ = sender.send(last_date);
     Ok(())
 }
 
@@ -388,8 +444,6 @@ async fn get_movie_list(
 
 // I think it's easier to make a dedicated command for this
 // I never need a partial (1 in this case) list of movies otherwise afaik
-// !!!!!!!!!!!!!! THIS DOESNT DEAL WITH NO DATA !!!!!!!!!!!!!!!!!!!
-// if no data it will err and never send. Then the RX side will be waiting forever?
 async fn get_most_recent_movie_datestamp(
     conn: &Connection,
     sender: oneshot::Sender<String>,
@@ -402,6 +456,7 @@ async fn get_most_recent_movie_datestamp(
         })
         .await?;
 
+    // note if this fails the sender is cancelled.
     let _ = sender.send(last_date);
     Ok(())
 }
@@ -442,46 +497,37 @@ async fn insert_movies(
     // This method does NOT clear old db entries
     // so there may be stale movie references in the DB
     // can likely make a 'clean db' function that takes only movieid list
-    let movies_result = conn
-        .call(|conn| {
-            let t = conn.transaction()?;
+    conn.call(|conn| {
+        let t = conn.transaction()?;
 
-            let mut stmt = t.prepare(
-                "INSERT OR REPLACE INTO movielist (
+        let mut stmt = t.prepare(
+            "INSERT OR REPLACE INTO movielist (
                     movieid, title, genre, year, rating, playcount, file, dateadded, premiered, art
                 ) VALUES (
                     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10
                 )",
-            )?;
+        )?;
 
-            for movie in movies {
-                stmt.execute(params![
-                    movie.movieid,
-                    movie.title,
-                    movie.genre.join(","),
-                    movie.year,
-                    movie.rating,
-                    movie.playcount,
-                    movie.file,
-                    movie.dateadded,
-                    movie.premiered,
-                    movie.art.poster.unwrap_or("".to_string()),
-                ])?;
-            }
-            drop(stmt);
+        for movie in movies {
+            stmt.execute(params![
+                movie.movieid,
+                movie.title,
+                movie.genre.join(","),
+                movie.year,
+                movie.rating,
+                movie.playcount,
+                movie.file,
+                movie.dateadded,
+                movie.premiered,
+                movie.art.poster.unwrap_or("".to_string()),
+            ])?;
+        }
+        drop(stmt);
 
-            t.commit()?;
-            Ok::<_, tokio_rusqlite::Error>(())
-        })
-        .await;
-
-    if let Err(err) = movies_result {
-        dbg!(&err);
-        return Err(err);
-    }
-
-    // Ok(Event::None)
-    Ok(())
+        t.commit()?;
+        Ok::<_, tokio_rusqlite::Error>(())
+    })
+    .await
 }
 
 async fn insert_tvshows(
@@ -490,47 +536,38 @@ async fn insert_tvshows(
 ) -> Result<(), tokio_rusqlite::Error> {
     // This method does NOT clear old db entries
     // so there may be stale references in the DB
-    let shows_result = conn
-        .call(|conn| {
-            let t = conn.transaction()?;
+    conn.call(|conn| {
+        let t = conn.transaction()?;
 
-            let mut stmt = t.prepare(
-                "INSERT OR REPLACE INTO tvshowlist (
-                    tvshowid, title, year, season, episode, file, dateadded, genre, rating, playcount, art
-                ) VALUES (
-                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11
-                )",
-            )?;
+        let mut stmt = t.prepare(
+            "INSERT OR REPLACE INTO tvshowlist (
+                tvshowid, title, year, season, episode, file, dateadded, genre, rating, playcount, art
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11
+            )",
+        )?;
 
-            for tv_show in tvshows {
-                stmt.execute(params![
-                    tv_show.tvshowid,
-                    tv_show.title,
-                    tv_show.year,
-                    tv_show.season,
-                    tv_show.episode,
-                    tv_show.file,
-                    tv_show.dateadded,
-                    tv_show.genre.join(","),
-                    tv_show.rating,
-                    tv_show.playcount,
-                    tv_show.art.poster.unwrap_or("".to_string()),
-                ])?;
-            }
-            drop(stmt);
+        for tv_show in tvshows {
+            stmt.execute(params![
+                tv_show.tvshowid,
+                tv_show.title,
+                tv_show.year,
+                tv_show.season,
+                tv_show.episode,
+                tv_show.file,
+                tv_show.dateadded,
+                tv_show.genre.join(","),
+                tv_show.rating,
+                tv_show.playcount,
+                tv_show.art.poster.unwrap_or("".to_string()),
+            ])?;
+        }
+        drop(stmt);
 
-            t.commit()?;
-            Ok::<_, tokio_rusqlite::Error>(())
-        })
-        .await;
-
-    if let Err(err) = shows_result {
-        dbg!(&err);
-        return Err(err);
-    }
-
-    // Ok(Event::None)
-    Ok(())
+        t.commit()?;
+        Ok::<_, tokio_rusqlite::Error>(())
+    })
+    .await
 }
 
 async fn insert_tvseasons(
@@ -581,49 +618,41 @@ async fn insert_tvepisodes(
 ) -> Result<(), tokio_rusqlite::Error> {
     // This method does NOT clear old db entries
     // so there may be stale references in the DB
-    let shows_result = conn
-        .call(|conn| {
-            let t = conn.transaction()?;
+    conn.call(|conn| {
+        let t = conn.transaction()?;
 
-            let mut stmt = t.prepare(
-                "INSERT OR REPLACE INTO tvepisodelist (
+        let mut stmt = t.prepare(
+            "INSERT OR REPLACE INTO tvepisodelist (
                     episodeid, tvshowid, title, season, episode, file, dateadded, rating, 
                     firstaired, playcount, art, specialsortseason, specialsortepisode
                 ) VALUES (
                     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13
                 )",
-            )?;
+        )?;
 
-            for episode in episodes {
-                stmt.execute(params![
-                    episode.episodeid,
-                    episode.tvshowid,
-                    episode.title,
-                    episode.season,
-                    episode.episode,
-                    episode.file,
-                    episode.dateadded,
-                    episode.rating,
-                    episode.firstaired,
-                    episode.playcount,
-                    episode.art.thumb.unwrap_or("".to_string()),
-                    episode.specialsortseason,
-                    episode.specialsortepisode,
-                ])?;
-            }
-            drop(stmt);
+        for episode in episodes {
+            stmt.execute(params![
+                episode.episodeid,
+                episode.tvshowid,
+                episode.title,
+                episode.season,
+                episode.episode,
+                episode.file,
+                episode.dateadded,
+                episode.rating,
+                episode.firstaired,
+                episode.playcount,
+                episode.art.thumb.unwrap_or("".to_string()),
+                episode.specialsortseason,
+                episode.specialsortepisode,
+            ])?;
+        }
+        drop(stmt);
 
-            t.commit()?;
-            Ok::<_, tokio_rusqlite::Error>(())
-        })
-        .await;
-
-    if let Err(err) = shows_result {
-        dbg!(&err);
-        return Err(err);
-    }
-
-    Ok(())
+        t.commit()?;
+        Ok::<_, tokio_rusqlite::Error>(())
+    })
+    .await
 }
 
 async fn create_tables(conn: &Connection) -> Result<(), tokio_rusqlite::Error> {
