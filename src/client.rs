@@ -504,7 +504,7 @@ async fn handle_kodi_command(
             mut sender,
             tvshowid,
         } => {
-            // I think this will fail cause it always sends a vec
+            // this will fail if the tvshowid is no longer in kodi
             let response: Value = client
                 .request(
                     "VideoLibrary.GetTVShowDetails",

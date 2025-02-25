@@ -45,8 +45,11 @@ pub enum SqlCommand {
         tvshowid: u32,
     },
 
-    InsertMovies(Vec<MovieListItem>),   // bool clear_before_insert?
-    InsertTVShows(Vec<TVShowListItem>), // same
+    InsertMovies(Vec<MovieListItem>), // bool clear_before_insert?
+    InsertTVShows {
+        tvshows: Vec<TVShowListItem>,
+        do_clean: bool,
+    }, // same
     InsertTVSeasons(Vec<TVSeasonListItem>, u32),
     InsertTVEpisodes(Vec<TVEpisodeListItem>, u32), // same
 }
@@ -131,7 +134,9 @@ async fn handle_command(
 
         SqlCommand::InsertMovies(movies) => insert_movies(conn, movies).await,
 
-        SqlCommand::InsertTVShows(tvshows) => insert_tvshows(conn, tvshows).await,
+        SqlCommand::InsertTVShows { tvshows, do_clean } => {
+            insert_tvshows(conn, tvshows, do_clean).await
+        }
 
         SqlCommand::InsertTVSeasons(seasons, tvshowid) => {
             insert_tvseasons(conn, seasons, tvshowid).await
@@ -563,8 +568,9 @@ async fn insert_movies(
 async fn insert_tvshows(
     conn: &Connection,
     tvshows: Vec<TVShowListItem>,
+    do_clean: bool,
 ) -> Result<(), tokio_rusqlite::Error> {
-    conn.call(|conn| {
+    conn.call(move |conn| {
         let tvshow_ids: Vec<u32> = tvshows.iter().map(|e| e.tvshowid).collect();
         let min_dateadded = tvshows.iter().map(|e| e.dateadded.clone()).min().unwrap();
 
@@ -602,7 +608,7 @@ async fn insert_tvshows(
         drop(stmt);
 
         // clean stale entries
-        if !min_dateadded.is_empty() {
+        if !min_dateadded.is_empty() && do_clean{
             t.execute(
                 "CREATE TEMP TABLE temp_tvshow_ids (tvshowid INTEGER PRIMARY KEY)",
                 [],

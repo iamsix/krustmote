@@ -360,8 +360,10 @@ impl Data {
                     });
                     let show = rx.next().await.expect("Should work if kodi online..");
                     // update the show in db since we loaded it anyway.
-                    self.db
-                        .send(db::SqlCommand::InsertTVShows(vec![show.clone()]));
+                    self.db.send(db::SqlCommand::InsertTVShows {
+                        tvshows: vec![show.clone()],
+                        do_clean: false,
+                    });
                     show
                 } else {
                     let (tx, rx) = oneshot::channel();
@@ -524,7 +526,10 @@ impl Data {
         self.sync_items(
             |tx, limit| KodiCommand::VideoLibraryGetTVShows { sender: tx, limit },
             |item, dbdate| item.dateadded == *dbdate,
-            |shows| db::SqlCommand::InsertTVShows(shows),
+            |tvshows| db::SqlCommand::InsertTVShows {
+                tvshows,
+                do_clean: true,
+            },
             |sender| db::SqlCommand::GetMostRecentShowDate { sender },
         )
         .await;
