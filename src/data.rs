@@ -308,10 +308,15 @@ impl Data {
             }
 
             Get::Movies => {
+                // This sync method is a bit slow with lots of movies
+                // I can't really think of a faster way though.
+                // sorting the list by dateadded and pulling most 1 or 20 is same speed.
+
                 // --------------
                 //  TODO - Consider datestamping my data itself (date retrieved)
                 //         Full refresh if stale + date mismatch.
                 //         not sure what 'stale' would be..
+                // Can also skip check if it was checked very recently maybe?
                 // -------------
                 self.sync_movies().await;
 

@@ -579,6 +579,12 @@ async fn insert_tvshows(
         )?;
 
         for tv_show in tvshows {
+            // for now we don't accept any show without a dateadded
+            // Note blank dateadded *should* never happen 
+            // but can (on tvshows with no episodes?) due to weird kodi db things.
+            if tv_show.dateadded.is_empty() {
+                continue;
+            }
             stmt.execute(params![
                 tv_show.tvshowid,
                 tv_show.title,
@@ -619,6 +625,8 @@ async fn insert_tvshows(
             drop(delete_stmt);
 
             t.execute("DROP TABLE temp_tvshow_ids", [])?;
+        } else {
+            dbg!("Empty dateadded entry found");
         }
 
         t.commit()?;

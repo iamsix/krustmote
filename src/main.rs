@@ -38,13 +38,15 @@ fn main() -> iced::Result {
     //     std::fs::create_dir(dir.as_path()).expect("expected permissions to create data folder");
     // }
 
-    let window =
-        window::icon::from_file("./icon.png").map_or(window::Settings::default(), |icon| {
-            window::Settings {
-                icon: Some(icon),
-                ..Default::default()
-            }
-        });
+    let icon = include_bytes!("../icon.png");
+    let window = window::icon::from_file_data(
+        icon,
+        Some(iced::advanced::graphics::image::image_rs::ImageFormat::Png),
+    )
+    .map_or(window::Settings::default(), |icon| window::Settings {
+        icon: Some(icon),
+        ..Default::default()
+    });
 
     let _ = BLANK_IMAGE.set(image::Handle::from_rgba(80, 120, vec![0; 38_400]));
     iced::application(Krustmote::title, Krustmote::update, Krustmote::view)
