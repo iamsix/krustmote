@@ -529,28 +529,30 @@ async fn insert_movies(
         drop(stmt);
 
         // clean stale entries
-        t.execute(
-            "CREATE TEMP TABLE temp_movie_ids (movieid INTEGER PRIMARY KEY)",
-            [],
-        )?;
-        let mut temp_insert = t.prepare(
-            "INSERT INTO temp_movie_ids 
+        if !min_dateadded.is_empty() {
+            t.execute(
+                "CREATE TEMP TABLE temp_movie_ids (movieid INTEGER PRIMARY KEY)",
+                [],
+            )?;
+            let mut temp_insert = t.prepare(
+                "INSERT INTO temp_movie_ids 
                  (movieid) VALUES (?)",
-        )?;
-        for movie_id in &movie_ids {
-            temp_insert.execute(params![movie_id])?;
-        }
-        drop(temp_insert);
+            )?;
+            for movie_id in &movie_ids {
+                temp_insert.execute(params![movie_id])?;
+            }
+            drop(temp_insert);
 
-        // Delete using a JOIN with the temporary table
-        let delete_sql = "DELETE FROM movielist WHERE 
+            // Delete using a JOIN with the temporary table
+            let delete_sql = "DELETE FROM movielist WHERE 
             movieid NOT IN (SELECT movieid FROM temp_movie_ids) 
             AND dateadded >= ?";
-        let mut delete_stmt = t.prepare(&delete_sql)?;
-        delete_stmt.execute(params![min_dateadded])?;
-        drop(delete_stmt);
+            let mut delete_stmt = t.prepare(&delete_sql)?;
+            delete_stmt.execute(params![min_dateadded])?;
+            drop(delete_stmt);
 
-        t.execute("DROP TABLE temp_movie_ids", [])?;
+            t.execute("DROP TABLE temp_movie_ids", [])?;
+        }
 
         t.commit()?;
         Ok::<_, tokio_rusqlite::Error>(())
@@ -594,28 +596,30 @@ async fn insert_tvshows(
         drop(stmt);
 
         // clean stale entries
-        t.execute(
-            "CREATE TEMP TABLE temp_tvshow_ids (tvshowid INTEGER PRIMARY KEY)",
-            [],
-        )?;
-        let mut temp_insert = t.prepare(
-            "INSERT INTO temp_tvshow_ids 
-                 (tvshowid) VALUES (?)",
-        )?;
-        for tvshow_id in &tvshow_ids {
-            temp_insert.execute(params![tvshow_id])?;
+        if !min_dateadded.is_empty() {
+            t.execute(
+                "CREATE TEMP TABLE temp_tvshow_ids (tvshowid INTEGER PRIMARY KEY)",
+                [],
+            )?;
+            let mut temp_insert = t.prepare(
+                "INSERT INTO temp_tvshow_ids 
+                    (tvshowid) VALUES (?)",
+            )?;
+            for tvshow_id in &tvshow_ids {
+                temp_insert.execute(params![tvshow_id])?;
+            }
+            drop(temp_insert);
+
+            // Delete using a JOIN with the temporary table
+            let delete_sql = "DELETE FROM tvshowlist WHERE 
+                tvshowid NOT IN (SELECT tvshowid FROM temp_tvshow_ids) 
+                AND dateadded >= ?";
+            let mut delete_stmt = t.prepare(&delete_sql)?;
+            delete_stmt.execute(params![min_dateadded])?;
+            drop(delete_stmt);
+
+            t.execute("DROP TABLE temp_tvshow_ids", [])?;
         }
-        drop(temp_insert);
-
-        // Delete using a JOIN with the temporary table
-        let delete_sql = "DELETE FROM tvshowlist WHERE 
-            tvshowid NOT IN (SELECT tvshowid FROM temp_tvshow_ids) 
-            AND dateadded >= ?";
-        let mut delete_stmt = t.prepare(&delete_sql)?;
-        delete_stmt.execute(params![min_dateadded])?;
-        drop(delete_stmt);
-
-        t.execute("DROP TABLE temp_tvshow_ids", [])?;
 
         t.commit()?;
         Ok::<_, tokio_rusqlite::Error>(())
@@ -708,28 +712,30 @@ async fn insert_tvepisodes(
         drop(stmt);
 
         // Clean stale entries
-        t.execute(
-            "CREATE TEMP TABLE temp_episode_ids (episodeid INTEGER PRIMARY KEY)",
-            [],
-        )?;
-        let mut temp_insert = t.prepare(
-            "INSERT INTO temp_episode_ids 
+        if !min_dateadded.is_empty() {
+            t.execute(
+                "CREATE TEMP TABLE temp_episode_ids (episodeid INTEGER PRIMARY KEY)",
+                [],
+            )?;
+            let mut temp_insert = t.prepare(
+                "INSERT INTO temp_episode_ids 
                  (episodeid) VALUES (?)",
-        )?;
-        for episode_id in &episode_ids {
-            temp_insert.execute(params![episode_id])?;
-        }
-        drop(temp_insert);
+            )?;
+            for episode_id in &episode_ids {
+                temp_insert.execute(params![episode_id])?;
+            }
+            drop(temp_insert);
 
-        // Delete using a JOIN with the temporary table
-        let delete_sql = "DELETE FROM tvepisodelist WHERE 
+            // Delete using a JOIN with the temporary table
+            let delete_sql = "DELETE FROM tvepisodelist WHERE 
             episodeid NOT IN (SELECT episodeid FROM temp_episode_ids) 
             AND dateadded >= ?1 AND tvshowid = ?2";
-        let mut delete_stmt = t.prepare(&delete_sql)?;
-        delete_stmt.execute(params![min_dateadded, tvshowid])?;
-        drop(delete_stmt);
+            let mut delete_stmt = t.prepare(&delete_sql)?;
+            delete_stmt.execute(params![min_dateadded, tvshowid])?;
+            drop(delete_stmt);
 
-        t.execute("DROP TABLE temp_episode_ids", [])?;
+            t.execute("DROP TABLE temp_episode_ids", [])?;
+        }
 
         t.commit()?;
         Ok::<_, tokio_rusqlite::Error>(())
