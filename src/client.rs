@@ -60,7 +60,6 @@ async fn handle_connection(mut output: Sender<Event>, mut server: Arc<KodiServer
 
     loop {
         match &mut state {
-            // Need to decouple client MPSC from client websocket connection here.
             State::Disconnected => {
                 match WsClientBuilder::default()
                     .build(server.websocket_url())
@@ -95,6 +94,8 @@ async fn handle_connection(mut output: Sender<Event>, mut server: Arc<KodiServer
                     server = srv;
                     state = State::Disconnected;
                     // let _ = output.send(Event::Disconnected);
+                } else {
+                    todo!("Kodi offline recieved MSG {:?}", message);
                 }
             }
 

@@ -93,7 +93,6 @@ pub struct Data {
     kodi_connected: bool,
     client: client::Connection,
     clientrx: Receiver<client::Event>,
-    // tv crumb data?
 }
 
 pub fn connect() -> impl Stream<Item = DataEvent> {
@@ -376,16 +375,17 @@ impl Data {
                 let mut data = rx.await?;
 
                 if item.season as usize != data.len() && self.kodi_connected {
-                    // for seasons pull all and always update, small data anyway
+                    // for seasons pull all and always update all, small data anyway
                     let (tx, mut rx) = channel(1);
                     let _ = self.client.send(KodiCommand::VideoLibraryGetTVSeasons {
                         sender: tx,
                         tvshowid: tvshowid as i32,
                     });
                     let newseasons = rx.select_next_some().await;
-                    let _ = self
-                        .db
-                        .send(db::SqlCommand::InsertTVSeasons(newseasons.clone()));
+                    let _ = self.db.send(db::SqlCommand::InsertTVSeasons(
+                        newseasons.clone(),
+                        tvshowid,
+                    ));
 
                     data = newseasons.into_iter().map(|v| Box::new(v) as _).collect();
                 };
@@ -420,7 +420,7 @@ impl Data {
                 self.sync_tvepisodes(tvshowid).await;
 
                 // pull show item from kodi if online and update db?
-                // necessary due to 1-season shows skipping season view?
+                // maybe necessary due to 1-season shows skipping season view?
                 let (tx, rx) = oneshot::channel();
                 let _ = self.db.send(db::SqlCommand::GetTVShowItem {
                     sender: tx,
@@ -533,7 +533,7 @@ impl Data {
                 tvshowid,
             },
             |item, dbdate| item.dateadded == *dbdate,
-            |episodes| db::SqlCommand::InsertTVEpisodes(episodes),
+            |episodes| db::SqlCommand::InsertTVEpisodes(episodes, tvshowid),
             |sender| db::SqlCommand::GetMostRecentEpisodeDate { sender, tvshowid },
         )
         .await;

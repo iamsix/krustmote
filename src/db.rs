@@ -45,10 +45,10 @@ pub enum SqlCommand {
         tvshowid: u32,
     },
 
-    InsertMovies(Vec<MovieListItem>),
-    InsertTVShows(Vec<TVShowListItem>),
-    InsertTVSeasons(Vec<TVSeasonListItem>),
-    InsertTVEpisodes(Vec<TVEpisodeListItem>),
+    InsertMovies(Vec<MovieListItem>),   // bool clear_before_insert?
+    InsertTVShows(Vec<TVShowListItem>), // same
+    InsertTVSeasons(Vec<TVSeasonListItem>, u32),
+    InsertTVEpisodes(Vec<TVEpisodeListItem>, u32), // same
 }
 
 #[derive(Debug, Clone)]
@@ -133,9 +133,13 @@ async fn handle_command(
 
         SqlCommand::InsertTVShows(tvshows) => insert_tvshows(conn, tvshows).await,
 
-        SqlCommand::InsertTVSeasons(seasons) => insert_tvseasons(conn, seasons).await,
+        SqlCommand::InsertTVSeasons(seasons, tvshowid) => {
+            insert_tvseasons(conn, seasons, tvshowid).await
+        }
 
-        SqlCommand::InsertTVEpisodes(episodes) => insert_tvepisodes(conn, episodes).await,
+        SqlCommand::InsertTVEpisodes(episodes, tvshowid) => {
+            insert_tvepisodes(conn, episodes, tvshowid).await
+        }
 
         SqlCommand::GetMovieList { sender } => get_movie_list(conn, sender).await,
 
@@ -494,10 +498,10 @@ async fn insert_movies(
     conn: &Connection,
     movies: Vec<MovieListItem>,
 ) -> Result<(), tokio_rusqlite::Error> {
-    // This method does NOT clear old db entries
-    // so there may be stale movie references in the DB
-    // can likely make a 'clean db' function that takes only movieid list
     conn.call(|conn| {
+        let movie_ids: Vec<u32> = movies.iter().map(|e| e.movieid).collect();
+        let min_dateadded = movies.iter().map(|e| e.dateadded.clone()).min().unwrap();
+
         let t = conn.transaction()?;
 
         let mut stmt = t.prepare(
@@ -524,6 +528,30 @@ async fn insert_movies(
         }
         drop(stmt);
 
+        // clean stale entries
+        t.execute(
+            "CREATE TEMP TABLE temp_movie_ids (movieid INTEGER PRIMARY KEY)",
+            [],
+        )?;
+        let mut temp_insert = t.prepare(
+            "INSERT INTO temp_movie_ids 
+                 (movieid) VALUES (?)",
+        )?;
+        for movie_id in &movie_ids {
+            temp_insert.execute(params![movie_id])?;
+        }
+        drop(temp_insert);
+
+        // Delete using a JOIN with the temporary table
+        let delete_sql = "DELETE FROM movielist WHERE 
+            movieid NOT IN (SELECT movieid FROM temp_movie_ids) 
+            AND dateadded >= ?";
+        let mut delete_stmt = t.prepare(&delete_sql)?;
+        delete_stmt.execute(params![min_dateadded])?;
+        drop(delete_stmt);
+
+        t.execute("DROP TABLE temp_movie_ids", [])?;
+
         t.commit()?;
         Ok::<_, tokio_rusqlite::Error>(())
     })
@@ -534,9 +562,10 @@ async fn insert_tvshows(
     conn: &Connection,
     tvshows: Vec<TVShowListItem>,
 ) -> Result<(), tokio_rusqlite::Error> {
-    // This method does NOT clear old db entries
-    // so there may be stale references in the DB
     conn.call(|conn| {
+        let tvshow_ids: Vec<u32> = tvshows.iter().map(|e| e.tvshowid).collect();
+        let min_dateadded = tvshows.iter().map(|e| e.dateadded.clone()).min().unwrap();
+
         let t = conn.transaction()?;
 
         let mut stmt = t.prepare(
@@ -564,6 +593,30 @@ async fn insert_tvshows(
         }
         drop(stmt);
 
+        // clean stale entries
+        t.execute(
+            "CREATE TEMP TABLE temp_tvshow_ids (tvshowid INTEGER PRIMARY KEY)",
+            [],
+        )?;
+        let mut temp_insert = t.prepare(
+            "INSERT INTO temp_tvshow_ids 
+                 (tvshowid) VALUES (?)",
+        )?;
+        for tvshow_id in &tvshow_ids {
+            temp_insert.execute(params![tvshow_id])?;
+        }
+        drop(temp_insert);
+
+        // Delete using a JOIN with the temporary table
+        let delete_sql = "DELETE FROM tvshowlist WHERE 
+            tvshowid NOT IN (SELECT tvshowid FROM temp_tvshow_ids) 
+            AND dateadded >= ?";
+        let mut delete_stmt = t.prepare(&delete_sql)?;
+        delete_stmt.execute(params![min_dateadded])?;
+        drop(delete_stmt);
+
+        t.execute("DROP TABLE temp_tvshow_ids", [])?;
+
         t.commit()?;
         Ok::<_, tokio_rusqlite::Error>(())
     })
@@ -573,12 +626,15 @@ async fn insert_tvshows(
 async fn insert_tvseasons(
     conn: &Connection,
     seasons: Vec<TVSeasonListItem>,
+    tvshowid: u32,
 ) -> Result<(), tokio_rusqlite::Error> {
-    // This method does NOT clear old db entries
-    // so there may be stale references in the DB
+    // no need to intelligently clean this one
+    // since it always inserts a full season list per show just remove and re-insert
     let shows_result = conn
-        .call(|conn| {
+        .call(move |conn| {
             let t = conn.transaction()?;
+
+            t.execute("DELETE FROM tvseasonlist WHERE tvshowid = ?", [tvshowid])?;
 
             let mut stmt = t.prepare(
                 "INSERT OR REPLACE INTO tvseasonlist (
@@ -615,10 +671,12 @@ async fn insert_tvseasons(
 async fn insert_tvepisodes(
     conn: &Connection,
     episodes: Vec<TVEpisodeListItem>,
+    tvshowid: u32,
 ) -> Result<(), tokio_rusqlite::Error> {
-    // This method does NOT clear old db entries
-    // so there may be stale references in the DB
-    conn.call(|conn| {
+    conn.call(move |conn| {
+        let episode_ids: Vec<u32> = episodes.iter().map(|e| e.episodeid).collect();
+        let min_dateadded = episodes.iter().map(|e| e.dateadded.clone()).min().unwrap();
+
         let t = conn.transaction()?;
 
         let mut stmt = t.prepare(
@@ -649,6 +707,30 @@ async fn insert_tvepisodes(
         }
         drop(stmt);
 
+        // Clean stale entries
+        t.execute(
+            "CREATE TEMP TABLE temp_episode_ids (episodeid INTEGER PRIMARY KEY)",
+            [],
+        )?;
+        let mut temp_insert = t.prepare(
+            "INSERT INTO temp_episode_ids 
+                 (episodeid) VALUES (?)",
+        )?;
+        for episode_id in &episode_ids {
+            temp_insert.execute(params![episode_id])?;
+        }
+        drop(temp_insert);
+
+        // Delete using a JOIN with the temporary table
+        let delete_sql = "DELETE FROM tvepisodelist WHERE 
+            episodeid NOT IN (SELECT episodeid FROM temp_episode_ids) 
+            AND dateadded >= ?1 AND tvshowid = ?2";
+        let mut delete_stmt = t.prepare(&delete_sql)?;
+        delete_stmt.execute(params![min_dateadded, tvshowid])?;
+        drop(delete_stmt);
+
+        t.execute("DROP TABLE temp_episode_ids", [])?;
+
         t.commit()?;
         Ok::<_, tokio_rusqlite::Error>(())
     })
@@ -656,7 +738,7 @@ async fn insert_tvepisodes(
 }
 
 async fn create_tables(conn: &Connection) -> Result<(), tokio_rusqlite::Error> {
-    let _servers = conn.call(|conn| {conn.execute(
+    conn.call(|conn| {conn.execute(
         "CREATE TABLE IF NOT EXISTS 'servers' (
             id INTEGER PRIMARY KEY,
             name TEXT NOT NULL,
@@ -692,7 +774,7 @@ async fn create_tables(conn: &Connection) -> Result<(), tokio_rusqlite::Error> {
     // TODO - these table names should include db_id ie. movielist0 etc.
     //        or I can make db0.sqlite etc separate from settings/server db
 
-    let _movielist = conn.call(|conn| {conn.execute(
+    conn.call(|conn| {conn.execute(
         "CREATE TABLE IF NOT EXISTS 'movielist' (
             movieid INTEGER PRIMARY KEY ON CONFLICT REPLACE,
             title TEXT,
@@ -715,7 +797,7 @@ async fn create_tables(conn: &Connection) -> Result<(), tokio_rusqlite::Error> {
     // Due to websocket response size limits I have to keep the movielist to minimal fields
     // I can create a moviedetails db with the same `movieid` then use JOIN
 
-    let _tvshowlist = conn.call(|conn| {conn.execute(
+    conn.call(|conn| {conn.execute(
         "CREATE TABLE IF NOT EXISTS 'tvshowlist' (
             tvshowid INTEGER PRIMARY KEY ON CONFLICT REPLACE,
             title TEXT,
@@ -736,7 +818,7 @@ async fn create_tables(conn: &Connection) -> Result<(), tokio_rusqlite::Error> {
 
     // dbg!(tvshowlist.err());
 
-    let _tvseasonlist = conn.call(|conn| {conn.execute(
+    conn.call(|conn| {conn.execute(
         "CREATE TABLE IF NOT EXISTS 'tvseasonlist' (
             seasonid INTEGER PRIMARY KEY ON CONFLICT REPLACE,
             tvshowid INTEGER,
@@ -751,7 +833,7 @@ async fn create_tables(conn: &Connection) -> Result<(), tokio_rusqlite::Error> {
 
     // dbg!(tvseasonlist.err());
 
-    let _tvepisodelist = conn.call(|conn| {conn.execute(
+    conn.call(|conn| {conn.execute(
         "CREATE TABLE IF NOT EXISTS 'tvepisodelist' (
             episodeid INTEGER PRIMARY KEY ON CONFLICT REPLACE,
             tvshowid INTEGER,
