@@ -10,6 +10,7 @@ use std::path::Path;
 use tokio::fs;
 use tokio::sync::Semaphore;
 
+use directories_next::ProjectDirs;
 use indexmap::IndexMap;
 use std::error::Error;
 use std::sync::{Arc, OnceLock};
@@ -31,13 +32,6 @@ const ITEM_HEIGHT: u32 = 55;
 static BLANK_IMAGE: OnceLock<image::Handle> = OnceLock::new();
 
 fn main() -> iced::Result {
-    // let dir = dirs_next::data_dir()
-    //     .expect("should have a data dir")
-    //     .join("krustmote");
-    // if !dir.exists() {
-    //     std::fs::create_dir(dir.as_path()).expect("expected permissions to create data folder");
-    // }
-
     let icon = include_bytes!("../icon.png");
     let window = window::icon::from_file_data(
         icon,
@@ -64,6 +58,7 @@ struct Krustmote {
     send_text: String,
     content_area: ContentArea,
     modal: Modals,
+    project_dirs: Option<ProjectDirs>,
 }
 
 #[derive(Default)]
@@ -160,6 +155,7 @@ impl Krustmote {
                 send_text: String::from(""),
                 content_area: ContentArea::Files,
                 modal: Modals::None,
+                project_dirs: ProjectDirs::from("ca", "sixis", "Krustmote"),
             },
             font::load(include_bytes!("../fonts/MaterialIcons-Regular.ttf").as_slice())
                 .map(Message::FontLoaded),
@@ -532,10 +528,18 @@ impl Krustmote {
             let permit = Arc::clone(sem).acquire(); // .acquire_owned();
             let lock = Arc::new(OnceLock::new());
             let c_lock = Arc::clone(&lock);
-            tokio::spawn(async move {
-                let path = format!("./imagecache/{:0x}.jpg", pic.namehash);
-                let path = Path::new(&path);
 
+            let path = if let Some(dir) = &self.project_dirs {
+                dir.cache_dir().to_path_buf()
+            } else {
+                Path::new("./imagecache/").to_path_buf()
+            };
+
+            tokio::spawn(async move {
+                if !fs::metadata(&path).await.is_ok() {
+                    fs::create_dir_all(&path).await.unwrap();
+                }
+                let path = path.join(format!("{:0x}.jpg", pic.namehash));
                 let res = match Krustmote::cache_hit(&path).await {
                     Ok(val) => Ok(val),
                     Err(_) => {
@@ -561,7 +565,6 @@ impl Krustmote {
         }
     }
 
-    // TODO! Proper path support! (if the dir doesn't exist this will fail)
     async fn cache_hit(path: &Path) -> Result<image::Handle, Box<dyn Error + Send + Sync>> {
         let path = if fs::metadata(path).await.is_ok() {
             path
