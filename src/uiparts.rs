@@ -5,13 +5,13 @@ use iced::Length;
 use iced::font::{Family, Font, Weight};
 use iced::widget::scrollable::Id;
 use iced::widget::{
-    button, column, container, image, pick_list, row, scrollable, text, text_input, Button,
-    Checkbox, Rule, Slider, Space,
+    Button, Checkbox, Rule, Slider, Space, button, column, container, image, pick_list, row,
+    scrollable, text, text_input,
 };
 
-use super::Krustmote;
 use super::BLANK_IMAGE;
 use super::ITEM_HEIGHT;
+use super::Krustmote;
 use super::{ListData, Message, Modals, State};
 
 use crate::data;

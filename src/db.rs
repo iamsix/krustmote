@@ -1,13 +1,13 @@
 use std::path::Path;
 
-use iced::futures::channel::mpsc::{channel, Receiver, Sender};
-use iced::futures::channel::oneshot;
 use iced::futures::StreamExt;
+use iced::futures::channel::mpsc::{Receiver, Sender, channel};
+use iced::futures::channel::oneshot;
 
 use directories_next::ProjectDirs;
 use tokio::fs;
-use tokio_rusqlite::params;
 use tokio_rusqlite::Connection;
+use tokio_rusqlite::params;
 
 use crate::koditypes::*;
 

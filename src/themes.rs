@@ -1,6 +1,6 @@
-use iced::widget::button;
 use iced::Color;
 use iced::Theme;
+use iced::widget::button;
 
 const DARK: Color = Color::from_rgb(0.2, 0.2, 0.2);
 const DARK_HILIGHT: Color = Color::from_rgb(0.3, 0.3, 0.3);

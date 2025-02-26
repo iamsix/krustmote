@@ -35,7 +35,7 @@ use crate::client;
 use crate::client::Event;
 use crate::db;
 use crate::koditypes::*;
-use iced::futures::channel::mpsc::{channel, Receiver, Sender};
+use iced::futures::channel::mpsc::{Receiver, Sender, channel};
 use iced::futures::channel::oneshot;
 use iced::futures::{SinkExt, Stream, StreamExt};
 use iced::stream;

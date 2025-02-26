@@ -8,11 +8,11 @@ use jsonrpsee::ws_client::WsClientBuilder;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use iced::futures::channel::mpsc::{channel, Receiver, Sender};
+use iced::futures::channel::mpsc::{Receiver, Sender, channel};
 use iced::futures::{SinkExt, StreamExt};
 
 use tokio::select;
-use tokio::time::{interval, Duration};
+use tokio::time::{Duration, interval};
 use tokio_stream::StreamMap;
 
 use std::error::Error;
