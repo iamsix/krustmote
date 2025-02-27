@@ -177,6 +177,7 @@ impl Krustmote {
 
             Message::SettingsEvent(event) => match event {
                 settingsui::Event::AddServer(srv) => {
+                    self.content_area = ContentArea::Files;
                     let q = data::Get::AddOrEditServer(srv);
                     return Command::perform(async { q }, move |q| Message::GetData(q));
                 }
@@ -326,7 +327,7 @@ impl Krustmote {
                     }
 
                     data::DataEvent::Servers(servers) => {
-                        dbg!(&servers);
+                        // dbg!(&servers);
                         if servers.len() == 0 {
                             let new_server = settingsui::Settings::new();
                             self.content_area = ContentArea::Settings(new_server);
@@ -334,7 +335,7 @@ impl Krustmote {
                             // We currently only care about 1 server until we
                             // have the settings table to get the selected server
                             self.kodi_status.server = Some(Arc::new(servers[0].clone()));
-                            self.content_area = ContentArea::Files;
+                            // self.content_area = ContentArea::Files;
                         }
                     }
 

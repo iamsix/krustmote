@@ -287,7 +287,7 @@ impl Data {
                 let (tx, rx) = oneshot::channel();
                 let _ = self.db.send(db::SqlCommand::GetServers { sender: tx });
                 let svrs = rx.await?;
-                dbg!(&svrs);
+                // dbg!(&svrs);
                 let _ = output.send(DataEvent::Servers(svrs)).await;
                 Ok(())
             }

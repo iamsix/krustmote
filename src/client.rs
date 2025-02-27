@@ -89,13 +89,23 @@ async fn handle_connection(mut output: Sender<Event>, mut server: Arc<KodiServer
             }
 
             State::Offline(reciever) => {
-                let message = reciever.select_next_some().await;
-                if let KodiCommand::ChangeServer(srv) = message {
-                    server = srv;
-                    state = State::Disconnected;
-                    // let _ = output.send(Event::Disconnected);
-                } else {
-                    todo!("Kodi offline recieved MSG {:?}", message);
+                // May change this to an auto-backoff eventually.
+                match tokio::time::timeout(Duration::from_secs(2), reciever.next()).await {
+                    Ok(Some(item)) => match item {
+                        KodiCommand::ChangeServer(srv) => {
+                            server = srv;
+                            state = State::Disconnected;
+                        }
+                        _ => {}
+                    },
+                    Ok(None) => {
+                        dbg!("Channel closed.");
+                    }
+                    Err(_) => {
+                        // retry connection on timeout
+                        dbg!("Timeout occurred.");
+                        state = State::Disconnected;
+                    }
                 }
             }
 
