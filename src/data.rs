@@ -491,7 +491,7 @@ impl Data {
                     .expect("Kodi should be online/working if this was called");
 
                 if !recent_items.iter().any(|item| date_added(&item, &dbdate)) {
-                    kodi_command(kodi_tx, -1); // All items
+                    self.client.send(kodi_command(kodi_tx, -1)); // All items
                     kodi_rx.next().await
                 } else {
                     if date_added(&recent_items[0], &dbdate) {

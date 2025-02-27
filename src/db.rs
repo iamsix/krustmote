@@ -645,7 +645,9 @@ async fn insert_tvshows(
 
             t.execute("DROP TABLE temp_tvshow_ids", [])?;
         } else {
-            dbg!("Empty dateadded entry found");
+            if do_clean {
+                dbg!("Empty dateadded entry found.");
+            }
         }
 
         t.commit()?;

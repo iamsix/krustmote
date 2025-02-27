@@ -98,12 +98,9 @@ async fn handle_connection(mut output: Sender<Event>, mut server: Arc<KodiServer
                         }
                         _ => {}
                     },
-                    Ok(None) => {
-                        dbg!("Channel closed.");
-                    }
-                    Err(_) => {
+                    _ => {
                         // retry connection on timeout
-                        dbg!("Timeout occurred.");
+                        // or reciever closed as that will make a new one
                         state = State::Disconnected;
                     }
                 }
