@@ -61,6 +61,10 @@ async fn handle_connection(mut output: Sender<Event>, mut server: Arc<KodiServer
     loop {
         match &mut state {
             State::Disconnected => {
+                let (ol_sender, ol_reciever) = channel(100);
+                let _ = output
+                    .send(Event::Disconnected(Connection(ol_sender)))
+                    .await;
                 match WsClientBuilder::default()
                     .build(server.websocket_url())
                     .await
@@ -80,17 +84,14 @@ async fn handle_connection(mut output: Sender<Event>, mut server: Arc<KodiServer
                     }
                     Err(err) => {
                         dbg!(err);
-                        let (sender, reciever) = channel(100);
-                        let _ = output.send(Event::Disconnected(Connection(sender))).await;
-                        state = State::Offline(reciever);
-                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        state = State::Offline(ol_reciever);
                     }
                 }
             }
 
             State::Offline(reciever) => {
                 // May change this to an auto-backoff eventually.
-                match tokio::time::timeout(Duration::from_secs(2), reciever.next()).await {
+                match tokio::time::timeout(Duration::from_secs(5), reciever.next()).await {
                     Ok(Some(item)) => match item {
                         KodiCommand::ChangeServer(srv) => {
                             server = srv;

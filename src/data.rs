@@ -214,6 +214,7 @@ impl Data {
             Event::UpdatePlayerProps(player_props) => match player_props {
                 None => {
                     self.kodi_status.active_player_id = None;
+                    self.kodi_status.playing_title = "".into();
                 }
                 Some(props) => {
                     if self.kodi_status.active_player_id.is_none() {
