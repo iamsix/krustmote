@@ -13,7 +13,7 @@ use tokio::sync::Semaphore;
 use directories_next::ProjectDirs;
 use indexmap::IndexMap;
 use std::error::Error;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, LazyLock, OnceLock};
 use tokio;
 
 mod client;
@@ -30,6 +30,10 @@ use koditypes::*;
 static SEM: Semaphore = Semaphore::const_new(10);
 const ITEM_HEIGHT: u32 = 55;
 static BLANK_IMAGE: OnceLock<image::Handle> = OnceLock::new();
+static PROJECT_DIRS: LazyLock<ProjectDirs> = LazyLock::new(|| {
+    ProjectDirs::from("ca", "sixis", "Krustmote")
+        .expect("Unlikely to ever run on an OS that doesn't support it")
+});
 
 fn main() -> iced::Result {
     let icon = include_bytes!("../icon.png");
@@ -58,7 +62,6 @@ struct Krustmote {
     send_text: String,
     content_area: ContentArea,
     modal: Modals,
-    project_dirs: Option<ProjectDirs>,
 }
 
 #[derive(Default)]
@@ -155,7 +158,6 @@ impl Krustmote {
                 send_text: String::from(""),
                 content_area: ContentArea::Files,
                 modal: Modals::None,
-                project_dirs: ProjectDirs::from("ca", "sixis", "Krustmote"),
             },
             font::load(include_bytes!("../fonts/MaterialIcons-Regular.ttf").as_slice())
                 .map(Message::FontLoaded),
@@ -530,16 +532,19 @@ impl Krustmote {
             let lock = Arc::new(OnceLock::new());
             let c_lock = Arc::clone(&lock);
 
-            let path = if let Some(dir) = &self.project_dirs {
-                dir.cache_dir().to_path_buf()
-            } else {
-                Path::new("./imagecache/").to_path_buf()
-            };
-
             tokio::spawn(async move {
-                if !fs::metadata(&path).await.is_ok() {
-                    fs::create_dir_all(&path).await.unwrap();
-                }
+                let c_path = PROJECT_DIRS.cache_dir();
+                let path = if !fs::metadata(c_path).await.is_ok() {
+                    c_path
+                } else {
+                    if fs::create_dir_all(c_path).await.is_ok() {
+                        c_path
+                    } else {
+                        // if this one fails it's never going to work.
+                        fs::create_dir_all("./imagecache/").await.unwrap();
+                        &Path::new("./imagecache/").to_path_buf()
+                    }
+                };
                 let path = path.join(format!("{:0x}.jpg", pic.namehash));
                 let res = match Krustmote::cache_hit(&path).await {
                     Ok(val) => Ok(val),

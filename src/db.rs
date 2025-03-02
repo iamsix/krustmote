@@ -4,7 +4,6 @@ use iced::futures::StreamExt;
 use iced::futures::channel::mpsc::{Receiver, Sender, channel};
 use iced::futures::channel::oneshot;
 
-use directories_next::ProjectDirs;
 use tokio::fs;
 use tokio_rusqlite::Connection;
 use tokio_rusqlite::params;
@@ -69,15 +68,16 @@ impl SqlConnection {
 }
 
 pub async fn connect(output: oneshot::Sender<SqlConnection>) {
-    // this isn't ideal to re-create but passing it from main seems crazy.
-    let dirs = ProjectDirs::from("ca", "sixis", "Krustmote");
-    let path = if let Some(dirs) = dirs {
-        if !fs::metadata(dirs.config_dir()).await.is_ok() {
-            fs::create_dir_all(dirs.config_dir()).await.unwrap();
-        }
-        dirs.config_dir().join("krustmote.db")
+    let dir = crate::PROJECT_DIRS.config_dir();
+    let db_path = dir.join("krustmote.db");
+    let path = if fs::metadata(&dir).await.is_ok() {
+        db_path
     } else {
-        Path::new("./krustmote.db").to_path_buf()
+        if fs::create_dir_all(&dir).await.is_ok() {
+            db_path
+        } else {
+            Path::new("./krustmote.db").to_path_buf()
+        }
     };
     match Connection::open(path).await {
         Ok(conn) => {
