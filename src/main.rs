@@ -493,8 +493,6 @@ impl Krustmote {
     }
 
     fn update_virtual_list(&mut self) {
-        let sem = Arc::new(&SEM);
-
         self.item_list.filtered_count = 0;
         for (i, file) in self
             .item_list
@@ -512,7 +510,7 @@ impl Krustmote {
                     continue;
                 }
                 let pic = file.get_art_data(&self.kodi_status.server);
-                let pic = self.get_art(&sem, pic);
+                let pic = self.get_art(pic);
                 let mut item = file.into_listdata();
                 item.image = pic;
                 self.item_list.virtual_list.insert(i, item);
@@ -527,16 +525,12 @@ impl Krustmote {
 
     // This entire thing might be better using worker oneshots/etc
     // but iced 0.14 will have 'Straw' which is perfect for something like this
-    fn get_art(&self, sem: &Arc<&'static Semaphore>, pic: Pic) -> Arc<OnceLock<image::Handle>> {
+    fn get_art(&self, pic: Pic) -> Arc<OnceLock<image::Handle>> {
         if pic.url.is_none() {
             return Arc::new(OnceLock::new());
         }
 
         let online = matches!(self.state, State::Connected(_, _));
-        // Check cache hit before semaphore await for possible 'early return'
-        // This semaphore limits it to 10 hits on the server at a time.
-        // Note this permit doesn't await yet, had to define here for async move.
-        let permit = Arc::clone(sem).acquire(); // .acquire_owned();
         let lock = Arc::new(OnceLock::new());
         let c_lock = Arc::clone(&lock);
 
@@ -544,11 +538,13 @@ impl Krustmote {
             let path = PROJECT_DIRS
                 .cache_dir()
                 .join(format!("{:0x}.jpg", pic.namehash));
+            // Check cache hit before semaphore for possible 'early return'
             let res = match Krustmote::cache_hit(&path).await {
                 Ok(val) => Ok(val),
                 Err(_) => {
                     if online {
-                        let _permit = permit.await;
+                        // semaphore limits it to 10 simultaneous DLs from svr
+                        let _permit = SEM.acquire().await;
                         Krustmote::download_pic(pic, &path).await
                     } else {
                         return;
