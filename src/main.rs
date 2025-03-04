@@ -534,7 +534,7 @@ impl Krustmote {
 
             tokio::spawn(async move {
                 let c_path = PROJECT_DIRS.cache_dir();
-                let path = if !fs::metadata(c_path).await.is_ok() {
+                let path = if fs::metadata(c_path).await.is_ok() {
                     c_path
                 } else {
                     if fs::create_dir_all(c_path).await.is_ok() {
