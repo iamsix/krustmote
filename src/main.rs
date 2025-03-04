@@ -13,6 +13,7 @@ use tokio::sync::Semaphore;
 use directories_next::ProjectDirs;
 use indexmap::IndexMap;
 use std::error::Error;
+use std::fs as stdfs;
 use std::sync::{Arc, LazyLock, OnceLock};
 use tokio;
 
@@ -148,6 +149,10 @@ enum State {
 
 impl Krustmote {
     fn new() -> (Self, Command<Message>) {
+        let res = make_cache_dir();
+        if res.is_err() {
+            dbg!(res.err());
+        }
         (
             Self {
                 state: State::Disconnected,
@@ -523,52 +528,40 @@ impl Krustmote {
     // This entire thing might be better using worker oneshots/etc
     // but iced 0.14 will have 'Straw' which is perfect for something like this
     fn get_art(&self, sem: &Arc<&'static Semaphore>, pic: Pic) -> Arc<OnceLock<image::Handle>> {
-        let online = matches!(self.state, State::Connected(_, _));
-        if pic.url.is_some() {
-            // Check cache hit before semaphore await for possible 'early return'
-            // This semaphore limits it to 10 hits on the server at a time.
-            // Note this permit doesn't await yet, had to define here for async move.
-            let permit = Arc::clone(sem).acquire(); // .acquire_owned();
-            let lock = Arc::new(OnceLock::new());
-            let c_lock = Arc::clone(&lock);
-
-            tokio::spawn(async move {
-                let c_path = PROJECT_DIRS.cache_dir();
-                let path = if fs::metadata(c_path).await.is_ok() {
-                    c_path
-                } else {
-                    if fs::create_dir_all(c_path).await.is_ok() {
-                        c_path
-                    } else {
-                        // if this one fails it's never going to work.
-                        fs::create_dir_all("./imagecache/").await.unwrap();
-                        &Path::new("./imagecache/").to_path_buf()
-                    }
-                };
-                let path = path.join(format!("{:0x}.jpg", pic.namehash));
-                let res = match Krustmote::cache_hit(&path).await {
-                    Ok(val) => Ok(val),
-                    Err(_) => {
-                        if online {
-                            let _permit = permit.await;
-                            Krustmote::download_pic(pic, &path).await
-                        } else {
-                            Err("Not online".into())
-                        }
-                    }
-                };
-                if let Ok(res) = res {
-                    let _ = c_lock.set(res);
-                } else if let Err(err) = res {
-                    if err.to_string() != "Not online" {
-                        dbg!(err);
-                    }
-                };
-            });
-            lock
-        } else {
-            Arc::new(OnceLock::new())
+        if pic.url.is_none() {
+            return Arc::new(OnceLock::new());
         }
+
+        let online = matches!(self.state, State::Connected(_, _));
+        // Check cache hit before semaphore await for possible 'early return'
+        // This semaphore limits it to 10 hits on the server at a time.
+        // Note this permit doesn't await yet, had to define here for async move.
+        let permit = Arc::clone(sem).acquire(); // .acquire_owned();
+        let lock = Arc::new(OnceLock::new());
+        let c_lock = Arc::clone(&lock);
+
+        tokio::spawn(async move {
+            let path = PROJECT_DIRS
+                .cache_dir()
+                .join(format!("{:0x}.jpg", pic.namehash));
+            let res = match Krustmote::cache_hit(&path).await {
+                Ok(val) => Ok(val),
+                Err(_) => {
+                    if online {
+                        let _permit = permit.await;
+                        Krustmote::download_pic(pic, &path).await
+                    } else {
+                        return;
+                    }
+                }
+            };
+            if let Ok(res) = res {
+                let _ = c_lock.set(res);
+            } else if let Err(err) = res {
+                dbg!(err);
+            };
+        });
+        lock
     }
 
     async fn cache_hit(path: &Path) -> Result<image::Handle, Box<dyn Error + Send + Sync>> {
@@ -608,4 +601,19 @@ impl Krustmote {
         let img = img.into_rgba8().to_vec();
         Ok(image::Handle::from_rgba(pic.w, pic.h, img))
     }
+}
+
+fn make_cache_dir() -> Result<(), Box<dyn Error>> {
+    let meta = stdfs::metadata(PROJECT_DIRS.cache_dir());
+    if meta.is_err() {
+        stdfs::create_dir_all(PROJECT_DIRS.cache_dir())?
+    } else {
+        if !meta?.is_dir() {
+            panic!(
+                "{:?} exists but is not a directory",
+                PROJECT_DIRS.cache_dir()
+            )
+        };
+    }
+    Ok(())
 }
