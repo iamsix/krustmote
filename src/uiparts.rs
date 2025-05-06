@@ -1,6 +1,7 @@
 use iced::Color;
 use iced::Element;
 use iced::Length;
+use iced::widget::stack;
 
 use iced::font::{Family, Font, Weight};
 use iced::widget::scrollable::Id;
@@ -217,10 +218,17 @@ pub(crate) fn top_bar<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
             .on_press(Message::ToggleLeftMenu)
             .style(themes::bare_button),
         Space::new(Length::Fill, Length::Shrink),
-        text_input("Filter..", &krustmote.item_list.filter)
-            .on_input(Message::FilterFileList)
-            .id(text_input::Id::new("Filter")),
-        button(" x ").on_press(Message::FilterFileList("".to_string()))
+        stack![
+            text_input("Filter..", &krustmote.item_list.filter)
+                .on_input(Message::FilterFileList)
+                .id(text_input::Id::new("Filter")),
+            row![
+                Space::new(Length::Fill, Length::Shrink),
+                button(" x ")
+                    .on_press(Message::FilterFileList("".to_owned()))
+                    .style(themes::bare_button),
+            ]
+        ]
     ])
     .into()
 }
