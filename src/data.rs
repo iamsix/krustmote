@@ -233,7 +233,7 @@ impl Data {
                 self.kodi_status.playing_title = item.make_title();
             }
             Event::InputRequested(input) => {
-                let _ = output.send(DataEvent::InputRequested(input));
+                let _ = output.send(DataEvent::InputRequested(input)).await;
             }
 
             _ => {}
