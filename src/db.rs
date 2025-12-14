@@ -4,6 +4,7 @@ use iced::futures::StreamExt;
 use iced::futures::channel::mpsc::{Receiver, Sender, channel};
 use iced::futures::channel::oneshot;
 
+use anyhow::{Context, Result};
 use tokio::fs;
 use tokio_rusqlite::Connection;
 use tokio_rusqlite::params;
@@ -109,10 +110,7 @@ async fn handle_connection(mut conn: Connection, mut reciever: Receiver<SqlComma
     }
 }
 
-async fn handle_command(
-    cmd: SqlCommand,
-    conn: &mut Connection,
-) -> Result<(), tokio_rusqlite::Error> {
+async fn handle_command(cmd: SqlCommand, conn: &mut Connection) -> Result<()> {
     match cmd {
         SqlCommand::GetServers { sender } => get_server_list(conn, sender).await,
 
@@ -196,7 +194,7 @@ async fn get_tv_show_item(
     conn: &Connection,
     sender: oneshot::Sender<TVShowListItem>,
     tvshowid: u32,
-) -> Result<(), tokio_rusqlite::Error> {
+) -> Result<()> {
     let item_result = conn
         .call(move |conn| {
             let q = "SELECT * FROM tvshowlist WHERE tvshowid = ?1";
@@ -241,7 +239,7 @@ async fn get_tv_show_item(
 async fn get_most_recent_tvshow_datestamp(
     conn: &Connection,
     sender: oneshot::Sender<String>,
-) -> Result<(), tokio_rusqlite::Error> {
+) -> Result<()> {
     let last_date = conn
         .call(|conn| {
             let q = "SELECT dateadded FROM tvshowlist ORDER BY dateadded DESC LIMIT 1";
@@ -260,7 +258,7 @@ async fn get_most_recent_tvshow_datestamp(
 async fn get_tv_show_list(
     conn: &Connection,
     sender: oneshot::Sender<Vec<Box<dyn IntoListData + Send>>>,
-) -> Result<(), tokio_rusqlite::Error> {
+) -> Result<()> {
     let shows_result = conn
         .call(move |conn| {
             let q = "SELECT * FROM tvshowlist ORDER BY title COLLATE NOCASE ASC";
@@ -307,7 +305,7 @@ async fn get_tv_seasons_list(
     conn: &Connection,
     sender: oneshot::Sender<Vec<Box<dyn IntoListData + Send>>>,
     tvshowid: u32,
-) -> Result<(), tokio_rusqlite::Error> {
+) -> Result<()> {
     let seasons_result = conn
         .call(move |conn| {
             let q = "SELECT * FROM tvseasonlist WHERE tvshowid = ?1 ORDER BY season";
@@ -335,7 +333,7 @@ async fn get_most_recent_episode_datestamp(
     conn: &Connection,
     sender: oneshot::Sender<String>,
     tvshowid: u32,
-) -> Result<(), tokio_rusqlite::Error> {
+) -> Result<()> {
     let last_date = conn
         .call(move |conn| {
             let q = "SELECT dateadded FROM tvepisodelist WHERE 
@@ -356,7 +354,7 @@ async fn get_tv_episode_list(
     sender: oneshot::Sender<Vec<Box<dyn IntoListData + Send>>>,
     tvshow: u32,
     season: i16,
-) -> Result<(), tokio_rusqlite::Error> {
+) -> Result<()> {
     let episodes_result = conn
         .call(move |conn| {
             let (q, params) = if season == -1 {
@@ -421,7 +419,7 @@ async fn get_tv_episode_list(
 async fn get_movie_list(
     conn: &Connection,
     sender: oneshot::Sender<Vec<Box<dyn IntoListData + Send>>>,
-) -> Result<(), tokio_rusqlite::Error> {
+) -> Result<()> {
     let movies_result = conn
         .call(|conn| {
             let q = "SELECT * FROM movielist ORDER BY dateadded DESC";
@@ -469,7 +467,7 @@ async fn get_movie_list(
 async fn get_most_recent_movie_datestamp(
     conn: &Connection,
     sender: oneshot::Sender<String>,
-) -> Result<(), tokio_rusqlite::Error> {
+) -> Result<()> {
     let last_date = conn
         .call(|conn| {
             let q = "SELECT dateadded FROM movielist ORDER BY dateadded DESC LIMIT 1";
@@ -486,7 +484,7 @@ async fn get_most_recent_movie_datestamp(
 async fn get_server_list(
     conn: &Connection,
     sender: oneshot::Sender<Vec<KodiServer>>,
-) -> Result<(), tokio_rusqlite::Error> {
+) -> Result<()> {
     let servers = conn
         .call(|conn| {
             let q = "SELECT * FROM servers";
@@ -512,10 +510,7 @@ async fn get_server_list(
     Ok(())
 }
 
-async fn insert_movies(
-    conn: &Connection,
-    movies: Vec<MovieListItem>,
-) -> Result<(), tokio_rusqlite::Error> {
+async fn insert_movies(conn: &Connection, movies: Vec<MovieListItem>) -> Result<()> {
     conn.call(|conn| {
         let movie_ids: Vec<u32> = movies.iter().map(|e| e.movieid).collect();
         let min_dateadded = movies.iter().map(|e| e.dateadded.clone()).min().unwrap();
@@ -576,13 +571,16 @@ async fn insert_movies(
         Ok::<_, tokio_rusqlite::Error>(())
     })
     .await
+    .context("Failed to insert movies DB")?;
+
+    Ok(())
 }
 
 async fn insert_tvshows(
     conn: &Connection,
     tvshows: Vec<TVShowListItem>,
     do_clean: bool,
-) -> Result<(), tokio_rusqlite::Error> {
+) -> Result<()> {
     conn.call(move |conn| {
         let tvshow_ids: Vec<u32> = tvshows.iter().map(|e| e.tvshowid).collect();
         let min_dateadded = tvshows.iter().map(|e| e.dateadded.clone()).min().unwrap();
@@ -654,13 +652,16 @@ async fn insert_tvshows(
         Ok::<_, tokio_rusqlite::Error>(())
     })
     .await
+    .context("Failed to insert tvshows DB")?;
+
+    Ok(())
 }
 
 async fn insert_tvseasons(
     conn: &Connection,
     seasons: Vec<TVSeasonListItem>,
     tvshowid: u32,
-) -> Result<(), tokio_rusqlite::Error> {
+) -> Result<()> {
     // no need to intelligently clean this one
     // since it always inserts a full season list per show just remove and re-insert
     let shows_result = conn
@@ -695,7 +696,7 @@ async fn insert_tvseasons(
 
     if let Err(err) = shows_result {
         dbg!(&err);
-        return Err(err);
+        // return Err(err);
     }
 
     Ok(())
@@ -705,7 +706,7 @@ async fn insert_tvepisodes(
     conn: &Connection,
     episodes: Vec<TVEpisodeListItem>,
     tvshowid: u32,
-) -> Result<(), tokio_rusqlite::Error> {
+) -> Result<()> {
     conn.call(move |conn| {
         let episode_ids: Vec<u32> = episodes.iter().map(|e| e.episodeid).collect();
         let min_dateadded = episodes.iter().map(|e| e.dateadded.clone()).min().unwrap();
@@ -770,9 +771,12 @@ async fn insert_tvepisodes(
         Ok::<_, tokio_rusqlite::Error>(())
     })
     .await
+    .context("Failed to insert episodes DB")?;
+
+    Ok(())
 }
 
-async fn create_tables(conn: &Connection) -> Result<(), tokio_rusqlite::Error> {
+async fn create_tables(conn: &Connection) -> Result<()> {
     conn.call(|conn| {conn.execute(
         "CREATE TABLE IF NOT EXISTS 'servers' (
             id INTEGER PRIMARY KEY,

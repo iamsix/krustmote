@@ -1,12 +1,12 @@
 use iced::Color;
 use iced::Element;
 use iced::Length;
+use iced::widget::space;
 use iced::widget::stack;
 
 use iced::font::{Family, Font, Weight};
-use iced::widget::scrollable::Id;
 use iced::widget::{
-    Button, Checkbox, Rule, Slider, Space, button, column, container, image, pick_list, row,
+    Button, Checkbox, Slider, Space, button, column, container, image, pick_list, row, rule,
     scrollable, text, text_input,
 };
 
@@ -28,14 +28,14 @@ pub(crate) fn make_subtitle_modal<'a>(
     container(column![
         row![
             text("Subtitles").height(40),
-            Space::new(Length::Fill, 10),
+            space::horizontal(),
             // This is likely the only place this Message is used
             // however it's the only way I can think to do this
             button("Download").on_press(Message::HideModalAndKodiReq(
                 KodiCommand::GUIActivateWindow("subtitlesearch")
             )),
         ],
-        Rule::horizontal(5),
+        rule::horizontal(5),
         row![
             pick_list(
                 &*krustmote.kodi_status.player_props.subtitles,
@@ -44,7 +44,7 @@ pub(crate) fn make_subtitle_modal<'a>(
             )
             .placeholder("No Subtitles")
             .width(Length::Fill),
-            Checkbox::new("", krustmote.kodi_status.player_props.subtitleenabled)
+            Checkbox::new(krustmote.kodi_status.player_props.subtitleenabled)
                 .on_toggle(Message::SubtitleToggle),
         ],
         row![
@@ -70,10 +70,10 @@ pub(crate) fn make_audio_modal<'a>(
     container(column![
         row![
             text("Audio").height(40),
-            Space::new(Length::Fill, 10),
+            space::horizontal(),
             button("x").on_press(Message::ShowModal(crate::Modals::None)),
         ],
-        Rule::horizontal(5),
+        rule::horizontal(5),
         pick_list(
             &*krustmote.kodi_status.player_props.audiostreams,
             krustmote
@@ -111,7 +111,7 @@ pub(crate) fn request_text_modal<'a>(
                 krustmote.send_text.clone()
             ))),
         row![
-            Space::new(Length::Fill, 5),
+            space::horizontal(),
             button("Send").on_press(Message::HideModalAndKodiReq(KodiCommand::InputSendText(
                 krustmote.send_text.clone()
             ))),
@@ -132,13 +132,13 @@ pub(crate) fn playing_bar<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> 
     if krustmote.kodi_status.active_player_id.is_some() {
         container(
             row![
-                Space::new(5, 5),
+                Space::new().width(5).height(5),
                 column![
                     Slider::new(0..=duration, play_time, Message::SliderChanged)
                         .on_release(Message::SliderReleased),
                     row![
                         text(format!("{}", krustmote.kodi_status.player_props.time,)).size(14),
-                        Space::new(Length::Fill, 5),
+                        space::horizontal(),
                         text(format!(
                             "{} ({end})",
                             krustmote.kodi_status.player_props.totaltime
@@ -157,7 +157,7 @@ pub(crate) fn playing_bar<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> 
                 ]
                 .width(Length::FillPortion(55)),
                 row![
-                    Space::new(Length::Fill, 5),
+                    space::horizontal(),
                     button(icons::skip_previous().size(32).height(48))
                         .style(themes::bare_button)
                         .on_press(Message::KodiReq(KodiCommand::InputExecuteAction(
@@ -188,7 +188,7 @@ pub(crate) fn playing_bar<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> 
                     button(icons::stop().size(32).height(48))
                         .on_press(Message::KodiReq(KodiCommand::InputExecuteAction("stop")))
                         .style(themes::bare_button),
-                    Space::new(20, 5),
+                    Space::new().width(20).height(5),
                     column![
                         button(icons::subtitles())
                             .on_press(Message::ShowModal(Modals::Subtitles))
@@ -198,7 +198,7 @@ pub(crate) fn playing_bar<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> 
                             .style(themes::bare_button),
                         button(icons::videocam()).style(themes::bare_button),
                     ],
-                    Space::new(10, 5),
+                    Space::new().width(10).height(5),
                 ]
                 .width(Length::FillPortion(40))
                 .align_y(iced::Alignment::Center)
@@ -208,7 +208,7 @@ pub(crate) fn playing_bar<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> 
         .height(80)
         .into()
     } else {
-        container(Space::new(Length::Fill, 80)).into()
+        container(Space::new().width(Length::Fill).height(80)).into()
     }
 }
 
@@ -217,13 +217,13 @@ pub(crate) fn top_bar<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
         button(icons::menu())
             .on_press(Message::ToggleLeftMenu)
             .style(themes::bare_button),
-        Space::new(Length::Fill, Length::Shrink),
+        space::horizontal(),
         stack![
             text_input("Filter..", &krustmote.item_list.filter)
                 .on_input(Message::FilterFileList)
-                .id(text_input::Id::new("Filter")),
+                .id("Filter"),
             row![
-                Space::new(Length::Fill, Length::Shrink),
+                space::horizontal(),
                 button(" x ")
                     .on_press(Message::FilterFileList("".to_owned()))
                     .style(themes::bare_button),
@@ -255,7 +255,7 @@ pub(crate) fn file_list<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> {
     let mut virtual_list: Vec<Element<'a, Message>> = Vec::new();
 
     let top_space = offset * ITEM_HEIGHT;
-    virtual_list.push(Space::new(10, top_space as f32).into());
+    virtual_list.push(Space::new().width(10).height(top_space as f32).into());
     if krustmote.item_list.virtual_list.is_empty() {
         virtual_list.push(text("No Items").center().width(Length::Fill).into());
     }
@@ -277,7 +277,7 @@ pub(crate) fn file_list<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> {
     .saturating_sub(krustmote.item_list.visible_count * ITEM_HEIGHT)
     .saturating_sub(offset * ITEM_HEIGHT);
 
-    virtual_list.push(Space::new(10, bottom_space as f32).into());
+    virtual_list.push(Space::new().width(10).height(bottom_space as f32).into());
 
     // dbg!(virtual_list.len());
 
@@ -313,13 +313,13 @@ pub(crate) fn file_list<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> {
             bottom: 5.0
         }),)
         .on_scroll(Message::Scrolled)
-        .id(Id::new("files"))
+        .id("files")
     ]
     .width(Length::Fill)
     .into()
 }
 
-pub(crate) fn make_listitem(data: &ListData) -> Button<Message> {
+pub(crate) fn make_listitem(data: &'_ ListData) -> Button<'_, Message> {
     // Let's stretch the definition of a 'button'
     // ___________________________________________________________
     // | picture |  Main Label Information                       |
@@ -361,7 +361,7 @@ pub(crate) fn make_listitem(data: &ListData) -> Button<Message> {
                     Some(d) => text(d.as_str()).size(10),
                     None => text(""),
                 },
-                Space::new(Length::Fill, Length::Shrink),
+                space::horizontal(),
                 match &data.bottom_right {
                     Some(d) => text(d.as_str()).size(10),
                     None => text(""),
@@ -390,7 +390,7 @@ pub(crate) fn left_menu<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> {
                 }
             ]
             .align_y(iced::Alignment::Center),
-            Rule::horizontal(20),
+            rule::horizontal(2),
             if let crate::State::Connected(..) = krustmote.state {
                 container(
                     button(row![icons::folder(), "Files"].align_y(iced::Alignment::Center))
@@ -484,7 +484,7 @@ pub(crate) fn remote<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
                         keymap: "R1"
                     }
                 )),
-                Space::new(40, 40), // Not sure what to put here.
+                Space::new().height(40).width(40), // Not sure what to put here.
                 button(icons::format_list_bulleted().size(30)).on_press(Message::KodiReq(
                     KodiCommand::InputButtonEvent {
                         button: "title",
@@ -493,10 +493,10 @@ pub(crate) fn remote<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
                 )),
             ]
             .spacing(10),
-            Space::new(Length::Shrink, Length::Fill),
+            space::vertical(),
             row![
                 // Might add pgup/pgdn buttons on either side here.
-                Space::new(65, 65),
+                Space::new().height(65).width(65),
                 button(icons::expand_less().size(48))
                     .width(65)
                     .height(65)
@@ -504,7 +504,7 @@ pub(crate) fn remote<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
                         button: "up",
                         keymap: "R1",
                     })),
-                Space::new(65, 65),
+                Space::new().height(65).width(65),
             ]
             .spacing(5),
             row![
@@ -546,7 +546,7 @@ pub(crate) fn remote<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
                         button: "down",
                         keymap: "R1",
                     })),
-                Space::new(65, 65),
+                Space::new().height(65).width(65),
             ]
             .spacing(5),
         ]

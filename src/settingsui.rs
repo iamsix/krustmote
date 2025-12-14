@@ -2,6 +2,7 @@ use iced::Color;
 use iced::Element;
 use iced::Length;
 use iced::Task as Command;
+use iced::widget::space;
 use iced::widget::{Space, button, column, row, text, text_input};
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -154,7 +155,7 @@ impl Settings {
             text("Password"),
             text_input("", &self.edit_server_password).on_input(Message::ServerPwChanged),
             row![
-                Space::new(Length::Fill, 10),
+                space::horizontal(),
                 button("Cancel").on_press(Message::Cancel),
                 if self.ip_is_valid
                     && self.ws_port_is_valid

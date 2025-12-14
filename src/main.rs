@@ -1,6 +1,6 @@
-use iced::widget::scrollable::Id;
+// use iced::widget::scrollable::Id;
 use iced::widget::{center, column, container, image, mouse_area, row, scrollable, stack};
-use iced::widget::{opaque, text_input};
+use iced::widget::{opaque, operation};
 
 use iced::{Element, Event, Length, Subscription, Task as Command, event, font, window};
 
@@ -38,25 +38,26 @@ static PROJECT_DIRS: LazyLock<ProjectDirs> = LazyLock::new(|| {
 
 fn main() -> iced::Result {
     let icon = include_bytes!("../icon.png");
-    let window = window::icon::from_file_data(
-        icon,
-        Some(iced::advanced::graphics::image::image_rs::ImageFormat::Png),
-    )
-    .map_or(window::Settings::default(), |icon| window::Settings {
-        icon: Some(icon),
-        ..Default::default()
-    });
+    let window = window::icon::from_file_data(icon, Some(imagelib::ImageFormat::Png)).map_or(
+        window::Settings::default(),
+        |icon| window::Settings {
+            icon: Some(icon),
+            ..Default::default()
+        },
+    );
 
     let _ = BLANK_IMAGE.set(image::Handle::from_rgba(80, 120, vec![0; 38_400]));
-    iced::application(Krustmote::title, Krustmote::update, Krustmote::view)
+    iced::application(Krustmote::new, Krustmote::update, Krustmote::view)
         .subscription(Krustmote::subscription)
         .window(window)
-        .run_with(Krustmote::new)
+        .title(Krustmote::title)
+        // .theme(Krustmote::theme)
+        .run()
 }
 
 struct Krustmote {
     state: State,
-    menu_width: u16,
+    menu_width: u32,
     kodi_status: KodiStatus,
     item_list: ItemList,
     slider_grabbed: bool,
@@ -169,6 +170,10 @@ impl Krustmote {
             //   Command::none(),
         )
     }
+
+    // fn theme(&self) -> Theme {
+    //     Theme::CatppuccinMocha
+    // }
 
     fn title(&self) -> String {
         format!("Krustmote - {}", self.kodi_status.playing_title)
@@ -284,12 +289,12 @@ impl Krustmote {
             }
 
             Message::FilterFileList(filter) => {
-                let mut cmds = vec![scrollable::snap_to(
-                    Id::new("files"),
+                let mut cmds = vec![operation::snap_to(
+                    "files",
                     scrollable::RelativeOffset { x: 0.0, y: 0.0 },
                 )];
                 if filter.is_empty() {
-                    cmds.push(text_input::focus(text_input::Id::new("Filter")))
+                    cmds.push(operation::focus("Filter"))
                 }
 
                 self.item_list.filter = filter;
@@ -362,8 +367,8 @@ impl Krustmote {
 
                         self.content_area = ContentArea::Files;
 
-                        return scrollable::snap_to(
-                            Id::new("files"),
+                        return operation::snap_to(
+                            "files",
                             scrollable::RelativeOffset { x: 0.0, y: 0.0 },
                         );
                     }
@@ -441,7 +446,7 @@ impl Krustmote {
         iced::Subscription::batch(subs)
     }
 
-    fn view(&self) -> Element<Message> {
+    fn view(&'_ self) -> Element<'_, Message> {
         if let ContentArea::Settings(set) = &self.content_area {
             return set.view().map(Message::Settings);
         };
