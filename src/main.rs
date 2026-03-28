@@ -479,14 +479,41 @@ impl Krustmote {
             }
             data::DataEvent::Servers(servers) => {
                 if servers.is_empty() {
-                    let new_server = settingsui::Settings::new();
-                    self.content_area = ContentArea::Settings(new_server);
+                    // Only switch to or reset settings if we aren't already there.
+                    // This prevents background reconnect cycles from clobbering active input.
+                    if !matches!(self.content_area, ContentArea::Settings(_)) {
+                        let new_server = settingsui::Settings::new();
+                        self.content_area = ContentArea::Settings(new_server);
+                    }
                 } else {
                     self.kodi_status.server = Some(Arc::new(servers[0].clone()));
                 }
                 Command::none()
             }
-            data::DataEvent::ListData { title, data } => {
+            data::DataEvent::ListData {
+                request,
+                title,
+                data,
+            } => {
+                // Check if this data matches our current focus.
+                // If we aren't "Loading" and the request doesn't match the top of the breadcrumb,
+                // this is a background sync result for a view we've navigated away from.
+                let mut matches_breadcrumb = false;
+                if let Some(Message::GetData(current_req)) = self.item_list.breadcrumb.last() {
+                    matches_breadcrumb = match (current_req, &request) {
+                        (data::Get::Movies(_), data::Get::Movies(_)) => true,
+                        (data::Get::TVShows(_), data::Get::TVShows(_)) => true,
+                        (data::Get::TVEpisodes(s1, e1, _), data::Get::TVEpisodes(s2, e2, _)) => {
+                            s1 == s2 && e1 == e2
+                        }
+                        _ => current_req == &request,
+                    };
+                }
+
+                if !matches_breadcrumb && !matches!(self.content_area, ContentArea::Loading) {
+                    return Command::none();
+                }
+
                 self.item_list.list_title = title;
                 self.item_list.raw_data = data;
                 self.item_list.filter = String::new();
@@ -524,16 +551,31 @@ impl Krustmote {
         match &mut self.state {
             State::Connected(connection, _) | State::Offline(connection) => {
                 match &cmd {
-                    data::Get::Movies | data::Get::TVShows | data::Get::Sources => {
+                    data::Get::Movies(sync) | data::Get::TVShows(sync) => {
+                        if *sync {
+                            self.item_list.breadcrumb.clear();
+                            self.item_list
+                                .breadcrumb
+                                .push(Message::GetData(cmd.clone()));
+                            self.content_area = ContentArea::Loading;
+                        }
+                    }
+                    data::Get::Sources => {
                         self.item_list.breadcrumb.clear();
                         self.item_list
                             .breadcrumb
                             .push(Message::GetData(cmd.clone()));
                         self.content_area = ContentArea::Loading;
                     }
-                    data::Get::TVEpisodes(_, _)
-                    | data::Get::TVSeasons(_)
-                    | data::Get::Directory { .. } => {
+                    data::Get::TVEpisodes(_, _, sync) => {
+                        if *sync {
+                            self.item_list
+                                .breadcrumb
+                                .push(Message::GetData(cmd.clone()));
+                            self.content_area = ContentArea::Loading;
+                        }
+                    }
+                    data::Get::TVSeasons(_) | data::Get::Directory { .. } => {
                         self.item_list
                             .breadcrumb
                             .push(Message::GetData(cmd.clone()));

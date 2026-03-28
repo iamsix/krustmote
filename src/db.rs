@@ -40,12 +40,9 @@ pub enum SqlCommand {
     },
 
     InsertMovies(Vec<MovieListItem>), // bool clear_before_insert?
-    InsertTVShows {
-        tvshows: Vec<TVShowListItem>,
-        do_clean: bool,
-    }, // same
+    InsertTVShows(Vec<TVShowListItem>),
     InsertTVSeasons(Vec<TVSeasonListItem>, u32),
-    InsertTVEpisodes(Vec<TVEpisodeListItem>, u32), // same
+    InsertTVEpisodes(Vec<TVEpisodeListItem>), // same
 
     // ID-based sync operations
     GetMovieIDs {
@@ -155,17 +152,13 @@ async fn handle_command(cmd: SqlCommand, conn: &mut Connection) -> Result<()> {
 
         SqlCommand::InsertMovies(movies) => insert_movies(conn, movies).await,
 
-        SqlCommand::InsertTVShows { tvshows, do_clean } => {
-            insert_tvshows(conn, tvshows, do_clean).await
-        }
+        SqlCommand::InsertTVShows(tvshows) => insert_tvshows(conn, tvshows).await,
 
         SqlCommand::InsertTVSeasons(seasons, tvshowid) => {
             insert_tvseasons(conn, seasons, tvshowid).await
         }
 
-        SqlCommand::InsertTVEpisodes(episodes, tvshowid) => {
-            insert_tvepisodes(conn, episodes, tvshowid).await
-        }
+        SqlCommand::InsertTVEpisodes(episodes) => insert_tvepisodes(conn, episodes).await,
 
         SqlCommand::GetMovieList { sender } => get_movie_list(conn, sender).await,
 
@@ -464,9 +457,6 @@ async fn get_server_list(
 
 async fn insert_movies(conn: &Connection, movies: Vec<MovieListItem>) -> Result<()> {
     conn.call(|conn| {
-        let movie_ids: Vec<u32> = movies.iter().map(|e| e.movieid).collect();
-        let min_dateadded = movies.iter().map(|e| e.dateadded.clone()).min().unwrap();
-
         let t = conn.transaction()?;
 
         let mut stmt = t.prepare(
@@ -493,32 +483,6 @@ async fn insert_movies(conn: &Connection, movies: Vec<MovieListItem>) -> Result<
         }
         drop(stmt);
 
-        // clean stale entries
-        if !min_dateadded.is_empty() {
-            t.execute(
-                "CREATE TEMP TABLE temp_movie_ids (movieid INTEGER PRIMARY KEY)",
-                [],
-            )?;
-            let mut temp_insert = t.prepare(
-                "INSERT INTO temp_movie_ids 
-                 (movieid) VALUES (?)",
-            )?;
-            for movie_id in &movie_ids {
-                temp_insert.execute(params![movie_id])?;
-            }
-            drop(temp_insert);
-
-            // Delete using a JOIN with the temporary table
-            let delete_sql = "DELETE FROM movielist WHERE 
-            movieid NOT IN (SELECT movieid FROM temp_movie_ids) 
-            AND dateadded >= ?";
-            let mut delete_stmt = t.prepare(&delete_sql)?;
-            delete_stmt.execute(params![min_dateadded])?;
-            drop(delete_stmt);
-
-            t.execute("DROP TABLE temp_movie_ids", [])?;
-        }
-
         t.commit()?;
         Ok::<_, tokio_rusqlite::Error>(())
     })
@@ -528,15 +492,8 @@ async fn insert_movies(conn: &Connection, movies: Vec<MovieListItem>) -> Result<
     Ok(())
 }
 
-async fn insert_tvshows(
-    conn: &Connection,
-    tvshows: Vec<TVShowListItem>,
-    do_clean: bool,
-) -> Result<()> {
+async fn insert_tvshows(conn: &Connection, tvshows: Vec<TVShowListItem>) -> Result<()> {
     conn.call(move |conn| {
-        let tvshow_ids: Vec<u32> = tvshows.iter().map(|e| e.tvshowid).collect();
-        let min_dateadded = tvshows.iter().map(|e| e.dateadded.clone()).min().unwrap();
-
         let t = conn.transaction()?;
 
         let mut stmt = t.prepare(
@@ -569,36 +526,6 @@ async fn insert_tvshows(
             ])?;
         }
         drop(stmt);
-
-        // clean stale entries
-        if !min_dateadded.is_empty() && do_clean{
-            t.execute(
-                "CREATE TEMP TABLE temp_tvshow_ids (tvshowid INTEGER PRIMARY KEY)",
-                [],
-            )?;
-            let mut temp_insert = t.prepare(
-                "INSERT INTO temp_tvshow_ids 
-                    (tvshowid) VALUES (?)",
-            )?;
-            for tvshow_id in &tvshow_ids {
-                temp_insert.execute(params![tvshow_id])?;
-            }
-            drop(temp_insert);
-
-            // Delete using a JOIN with the temporary table
-            let delete_sql = "DELETE FROM tvshowlist WHERE 
-                tvshowid NOT IN (SELECT tvshowid FROM temp_tvshow_ids) 
-                AND dateadded >= ?";
-            let mut delete_stmt = t.prepare(&delete_sql)?;
-            delete_stmt.execute(params![min_dateadded])?;
-            drop(delete_stmt);
-
-            t.execute("DROP TABLE temp_tvshow_ids", [])?;
-        } else {
-            if do_clean {
-                dbg!("Empty dateadded entry found.");
-            }
-        }
 
         t.commit()?;
         Ok::<_, tokio_rusqlite::Error>(())
@@ -654,15 +581,8 @@ async fn insert_tvseasons(
     Ok(())
 }
 
-async fn insert_tvepisodes(
-    conn: &Connection,
-    episodes: Vec<TVEpisodeListItem>,
-    tvshowid: u32,
-) -> Result<()> {
+async fn insert_tvepisodes(conn: &Connection, episodes: Vec<TVEpisodeListItem>) -> Result<()> {
     conn.call(move |conn| {
-        let episode_ids: Vec<u32> = episodes.iter().map(|e| e.episodeid).collect();
-        let min_dateadded = episodes.iter().map(|e| e.dateadded.clone()).min().unwrap();
-
         let t = conn.transaction()?;
 
         let mut stmt = t.prepare(
@@ -692,32 +612,6 @@ async fn insert_tvepisodes(
             ])?;
         }
         drop(stmt);
-
-        // Clean stale entries
-        if !min_dateadded.is_empty() {
-            t.execute(
-                "CREATE TEMP TABLE temp_episode_ids (episodeid INTEGER PRIMARY KEY)",
-                [],
-            )?;
-            let mut temp_insert = t.prepare(
-                "INSERT INTO temp_episode_ids 
-                 (episodeid) VALUES (?)",
-            )?;
-            for episode_id in &episode_ids {
-                temp_insert.execute(params![episode_id])?;
-            }
-            drop(temp_insert);
-
-            // Delete using a JOIN with the temporary table
-            let delete_sql = "DELETE FROM tvepisodelist WHERE 
-            episodeid NOT IN (SELECT episodeid FROM temp_episode_ids) 
-            AND dateadded >= ?1 AND tvshowid = ?2";
-            let mut delete_stmt = t.prepare(&delete_sql)?;
-            delete_stmt.execute(params![min_dateadded, tvshowid])?;
-            drop(delete_stmt);
-
-            t.execute("DROP TABLE temp_episode_ids", [])?;
-        }
 
         t.commit()?;
         Ok::<_, tokio_rusqlite::Error>(())

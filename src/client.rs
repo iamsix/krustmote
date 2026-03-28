@@ -19,7 +19,7 @@ use std::error::Error;
 use std::sync::Arc;
 
 use crate::koditypes::*;
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 // TODO: muncher to allow nesting?
 macro_rules! rpc_obj_params {
@@ -623,63 +623,101 @@ async fn handle_kodi_command(
         }
 
         KodiCommand::VideoLibraryGetMoviesByIDs { mut sender, ids } => {
-            // Fetch movies by a set of IDs - note this requires multiple requests
-            // Kodi doesn't support filtering by multiple IDs in one request
-            let mut movies = Vec::new();
-
-            for id in ids {
-                match client
-                    .request::<Value, ObjectParams>(
-                        "VideoLibrary.GetMovieDetails",
-                        rpc_obj_params!("movieid" = id, "properties" = MINIMAL_MOVIE_PROPS),
-                    )
-                    .await
-                {
-                    Ok(response) => {
-                        if let Ok(movie) =
-                            <MovieListItem as Deserialize>::deserialize(&response["moviedetails"])
-                        {
-                            movies.push(movie);
-                        }
-                    }
-                    Err(_) => {
-                        // Movie might have been deleted, skip it
-                        continue;
-                    }
-                }
+            if ids.is_empty() {
+                let _ = sender.send(vec![]).await;
+                return Ok(Event::None);
             }
 
+            let mut stream = iced::futures::stream::iter(ids)
+                .map(|id| {
+                    // let client = client.clone();
+                    async move {
+                        let params =
+                            rpc_obj_params!("movieid" = id, "properties" = MINIMAL_MOVIE_PROPS);
+                        request_field::<MovieListItem>(
+                            &client,
+                            "VideoLibrary.GetMovieDetails",
+                            params,
+                            "moviedetails",
+                        )
+                        .await
+                    }
+                })
+                .buffer_unordered(10);
+
+            let mut movies = Vec::new();
+            while let Some(res) = stream.next().await {
+                if let Ok(movie) = res {
+                    movies.push(movie);
+                }
+            }
             sender.send(movies).await?;
             Ok(Event::None)
         }
 
         KodiCommand::VideoLibraryGetTVShowsByIDs { mut sender, ids } => {
-            // Fetch TV shows by a set of IDs
-            let mut shows = Vec::new();
-
-            for id in ids {
-                match client
-                    .request::<Value, ObjectParams>(
-                        "VideoLibrary.GetTVShowDetails",
-                        rpc_obj_params!("tvshowid" = id, "properties" = MINIMAL_TV_PROPS),
-                    )
-                    .await
-                {
-                    Ok(response) => {
-                        if let Ok(show) =
-                            <TVShowListItem as Deserialize>::deserialize(&response["tvshowdetails"])
-                        {
-                            shows.push(show);
-                        }
-                    }
-                    Err(_) => {
-                        // Show might have been deleted, skip it
-                        continue;
-                    }
-                }
+            if ids.is_empty() {
+                let _ = sender.send(vec![]).await;
+                return Ok(Event::None);
             }
 
+            let mut stream = iced::futures::stream::iter(ids)
+                .map(|id| {
+                    //let client = client.clone();
+                    async move {
+                        let params =
+                            rpc_obj_params!("tvshowid" = id, "properties" = MINIMAL_TV_PROPS);
+                        request_field::<TVShowListItem>(
+                            &client,
+                            "VideoLibrary.GetTVShowDetails",
+                            params,
+                            "tvshowdetails",
+                        )
+                        .await
+                    }
+                })
+                .buffer_unordered(10);
+
+            let mut shows = Vec::new();
+            while let Some(res) = stream.next().await {
+                if let Ok(show) = res {
+                    shows.push(show);
+                }
+            }
             sender.send(shows).await?;
+            Ok(Event::None)
+        }
+
+        KodiCommand::VideoLibraryGetTVEpisodesByIDs { mut sender, ids } => {
+            if ids.is_empty() {
+                let _ = sender.send(vec![]).await;
+                return Ok(Event::None);
+            }
+
+            let mut stream = iced::futures::stream::iter(ids)
+                .map(|id| {
+                    // // let client = client.clone();
+                    async move {
+                        let params =
+                            rpc_obj_params!("episodeid" = id, "properties" = MINIMAL_EP_PROPS);
+                        request_field::<TVEpisodeListItem>(
+                            &client,
+                            "VideoLibrary.GetEpisodeDetails",
+                            params,
+                            "episodedetails",
+                        )
+                        .await
+                    }
+                })
+                .buffer_unordered(10);
+
+            let mut episodes = Vec::new();
+            while let Some(res) = stream.next().await {
+                if let Ok(ep) = res {
+                    episodes.push(ep);
+                }
+            }
+            sender.send(episodes).await?;
             Ok(Event::None)
         }
 

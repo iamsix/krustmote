@@ -23,21 +23,23 @@ use iced::futures::channel::mpsc::{Receiver, Sender, channel};
 use iced::futures::channel::oneshot;
 use iced::futures::{SinkExt, Stream, StreamExt};
 use iced::stream;
+use std::collections::HashSet;
 use std::error::Error;
 use tokio::select;
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 // input messages from UI
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Get {
     KodiServers,
     AddOrEditServer(KodiServer),
-    Movies,
-    TVShows,
+    Movies(bool),
+    TVShows(bool),
     TVSeasons(u32),
-    TVEpisodes(u32, i16),
+    TVEpisodes(u32, i16, bool),
     Directory { path: String, media_type: MediaType },
     Sources,
+    SyncDone(Box<Get>),
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +59,7 @@ pub enum DataEvent {
     Offline(Connection),
     Online(Connection, client::Connection),
     ListData {
+        request: Get,
         title: String,
         data: Vec<Box<dyn IntoListData + Send + 'static>>,
     },
@@ -78,6 +81,7 @@ pub struct Data {
     kodi_connected: bool,
     client: client::Connection,
     clientrx: Receiver<client::Event>,
+    syncing: HashSet<Get>,
 }
 
 pub fn connect() -> impl Stream<Item = DataEvent> {
@@ -139,6 +143,7 @@ impl Data {
             kodi_connected,
             client,
             clientrx: kodirx,
+            syncing: HashSet::new(),
         })
     }
 
@@ -181,7 +186,7 @@ impl Data {
 
                 msg = reciever.select_next_some() => {
                     debug!(?msg, "Handling UI command");
-                    let res = self.handle_cmd(&mut output, msg).await;
+                    let res = self.handle_cmd(&mut output, msg, sender.clone()).await;
                     if res.is_err() {
                         error!("Command handler error: {:?}", res.err());
                     }
@@ -237,6 +242,7 @@ impl Data {
         &mut self,
         output: &mut Sender<DataEvent>,
         msg: Get,
+        sender: Sender<Get>,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         match msg {
             Get::Directory { path, media_type } => {
@@ -244,11 +250,18 @@ impl Data {
                 self.client.send(KodiCommand::GetDirectory {
                     sender: tx,
                     path: path.clone(),
-                    media_type,
+                    media_type: media_type.clone(),
                 });
 
                 let data = rx.select_next_some().await;
-                let _ = output.send(DataEvent::ListData { title: path, data }).await;
+                let title = path.clone();
+                let _ = output
+                    .send(DataEvent::ListData {
+                        request: Get::Directory { path, media_type },
+                        title,
+                        data,
+                    })
+                    .await;
                 Ok(())
             }
 
@@ -262,6 +275,7 @@ impl Data {
                 let data = rx.select_next_some().await;
                 let _ = output
                     .send(DataEvent::ListData {
+                        request: Get::Sources,
                         title: "Sources".into(),
                         data,
                     })
@@ -293,18 +307,22 @@ impl Data {
                 Ok(())
             }
 
-            Get::Movies => {
-                // This sync method is a bit slow with lots of movies
-                // I can't really think of a faster way though.
-                // sorting the list by dateadded and pulling most 1 or 20 is same speed.
+            Get::SyncDone(request) => {
+                self.syncing.remove(&request);
+                Ok(())
+            }
 
-                // --------------
-                //  TODO - Consider datestamping my data itself (date retrieved)
-                //         Full refresh if stale + date mismatch.
-                //         not sure what 'stale' would be..
-                // Can also skip check if it was checked very recently maybe?
-                // -------------
-                self.sync_movies().await;
+            Get::Movies(sync) => {
+                if sync && self.kodi_connected && !self.syncing.contains(&msg) {
+                    self.syncing.insert(msg.clone());
+                    let client = self.client.clone();
+                    let db = self.db.clone();
+                    let ui_tx = sender.clone();
+                    let original_msg = msg.clone();
+                    tokio::spawn(async move {
+                        Self::sync_movies_bg(client, db, ui_tx, original_msg).await;
+                    });
+                }
 
                 let (tx, rx) = oneshot::channel();
                 let _ = self.db.send(db::SqlCommand::GetMovieList { sender: tx });
@@ -312,6 +330,7 @@ impl Data {
 
                 let _ = output
                     .send(DataEvent::ListData {
+                        request: Get::Movies(sync),
                         title: "Movies".into(),
                         data,
                     })
@@ -320,8 +339,17 @@ impl Data {
                 Ok(())
             }
 
-            Get::TVShows => {
-                self.sync_tvshows().await;
+            Get::TVShows(sync) => {
+                if sync && self.kodi_connected && !self.syncing.contains(&msg) {
+                    self.syncing.insert(msg.clone());
+                    let client = self.client.clone();
+                    let db = self.db.clone();
+                    let ui_tx = sender.clone();
+                    let original_msg = msg.clone();
+                    tokio::spawn(async move {
+                        Self::sync_tvshows_bg(client, db, ui_tx, original_msg).await;
+                    });
+                }
 
                 let (tx, rx) = oneshot::channel();
                 let _ = self.db.send(db::SqlCommand::GetTVShowList { sender: tx });
@@ -329,6 +357,7 @@ impl Data {
 
                 let _ = output
                     .send(DataEvent::ListData {
+                        request: Get::TVShows(sync),
                         title: "TV Shows".into(),
                         data,
                     })
@@ -346,10 +375,8 @@ impl Data {
                     });
                     let show = rx.next().await.expect("Should work if kodi online..");
                     // update the show in db since we loaded it anyway.
-                    self.db.send(db::SqlCommand::InsertTVShows {
-                        tvshows: vec![show.clone()],
-                        do_clean: false,
-                    });
+                    self.db
+                        .send(db::SqlCommand::InsertTVShows(vec![show.clone()]));
                     show
                 } else {
                     let (tx, rx) = oneshot::channel();
@@ -396,6 +423,7 @@ impl Data {
 
                 let _ = output
                     .send(DataEvent::ListData {
+                        request: Get::TVSeasons(tvshowid),
                         title: item.title,
                         data,
                     })
@@ -404,13 +432,17 @@ impl Data {
                 Ok(())
             }
 
-            Get::TVEpisodes(tvshowid, season) => {
-                // due to seasons this one is odd to sync
-                // if I ask for last-20 I'm basically repulling the whole last season
-                // though I am doing the dateadded check first, so stil a fastpath?
-                // seasons complicate it...
-                // for now I'm just going to treat the whole show as 1 item to sync.
-                self.sync_tvepisodes(tvshowid).await;
+            Get::TVEpisodes(tvshowid, season, sync) => {
+                if sync && self.kodi_connected && !self.syncing.contains(&msg) {
+                    self.syncing.insert(msg.clone());
+                    let client = self.client.clone();
+                    let db = self.db.clone();
+                    let ui_tx = sender.clone();
+                    let original_msg = msg.clone();
+                    tokio::spawn(async move {
+                        Self::sync_tvepisodes_bg(client, db, ui_tx, tvshowid, original_msg).await;
+                    });
+                }
 
                 // pull show item from kodi if online and update db?
                 // maybe necessary due to 1-season shows skipping season view?
@@ -436,16 +468,24 @@ impl Data {
 
                 let data = rx.await?;
 
-                let _ = output.send(DataEvent::ListData { title, data }).await;
+                let _ = output
+                    .send(DataEvent::ListData {
+                        request: Get::TVEpisodes(tvshowid, season, sync),
+                        title,
+                        data,
+                    })
+                    .await;
 
                 Ok(())
             }
         }
     }
 
-    // might make this also take sample size (instead of hardcoding 20)
-    async fn sync_items_by_ids<T, K, B, D, I, G>(
-        &mut self,
+    async fn sync_items_by_ids_bg<T, K, B, D, I, G>(
+        mut client: client::Connection,
+        mut db: db::SqlConnection,
+        mut ui_tx: Sender<Get>,
+        refresh_msg: Get,
         get_kodi_ids: K,
         get_batch: B,
         db_delete_ids: D,
@@ -460,13 +500,9 @@ impl Data {
         I: Fn(Vec<T>) -> db::SqlCommand,
         G: Fn(oneshot::Sender<Vec<u32>>) -> db::SqlCommand,
     {
-        if !self.kodi_connected {
-            return;
-        }
-
         // Step 1: Get all IDs from Kodi
         let (kodi_tx, mut kodi_rx) = channel(1);
-        self.client.send(get_kodi_ids(kodi_tx));
+        client.send(get_kodi_ids(kodi_tx));
         let kodi_ids = match kodi_rx.next().await {
             Some(ids) => ids,
             None => return,
@@ -474,7 +510,7 @@ impl Data {
 
         // Step 2: Get all IDs from DB
         let (db_tx, db_rx) = oneshot::channel();
-        let _ = self.db.send(get_db_ids(db_tx));
+        let _ = db.send(get_db_ids(db_tx));
         let db_ids = match db_rx.await {
             Ok(ids) => ids,
             Err(_) => return,
@@ -497,57 +533,78 @@ impl Data {
 
         // Step 4: Delete items no longer in Kodi
         if !deleted_ids.is_empty() {
-            let _ = self.db.send(db_delete_ids(deleted_ids));
+            let _ = db.send(db_delete_ids(deleted_ids));
+            let _ = ui_tx.send(refresh_msg.clone()).await;
         }
 
         // Step 5: Fetch new items in batches
         if !new_ids.is_empty() {
             for _batch_ids in new_ids.chunks(batch_size as usize) {
                 let (tx, mut rx) = channel(1);
-                self.client.send(get_batch(tx, _batch_ids.to_vec()));
+                client.send(get_batch(tx, _batch_ids.to_vec()));
 
                 if let Some(items) = rx.next().await {
-                    let _ = self.db.send(db_insert(items));
+                    let _ = db.send(db_insert(items));
+                    let _ = ui_tx.send(refresh_msg.clone()).await;
                 }
             }
         }
     }
 
-    async fn sync_movies(&mut self) {
-        self.sync_items_by_ids(
+    async fn sync_movies_bg(
+        client: client::Connection,
+        db: db::SqlConnection,
+        mut ui_tx: Sender<Get>,
+        original_msg: Get,
+    ) {
+        Self::sync_items_by_ids_bg(
+            client,
+            db,
+            ui_tx.clone(),
+            Get::Movies(false),
             |sender| KodiCommand::VideoLibraryGetMovieIDs { sender },
             |sender, ids| KodiCommand::VideoLibraryGetMoviesByIDs { sender, ids },
             |ids| db::SqlCommand::DeleteMoviesByIDs(ids),
             |movies| db::SqlCommand::InsertMovies(movies),
             |sender| db::SqlCommand::GetMovieIDs { sender },
-            500, // batch size
+            50, // Smaller batch size for dynamic feel
         )
         .await;
+        let _ = ui_tx.send(Get::SyncDone(Box::new(original_msg))).await;
     }
 
-    async fn sync_tvshows(&mut self) {
-        self.sync_items_by_ids(
+    async fn sync_tvshows_bg(
+        client: client::Connection,
+        db: db::SqlConnection,
+        mut ui_tx: Sender<Get>,
+        original_msg: Get,
+    ) {
+        Self::sync_items_by_ids_bg(
+            client,
+            db,
+            ui_tx.clone(),
+            Get::TVShows(false),
             |sender| KodiCommand::VideoLibraryGetTVShowIDs { sender },
             |sender, ids| KodiCommand::VideoLibraryGetTVShowsByIDs { sender, ids },
             |ids| db::SqlCommand::DeleteTVShowsByIDs(ids),
-            |tvshows| db::SqlCommand::InsertTVShows {
-                tvshows,
-                do_clean: false, // We handle cleanup via ID deletion now
-            },
+            |tvshows| db::SqlCommand::InsertTVShows(tvshows),
             |sender| db::SqlCommand::GetTVShowIDs { sender },
-            500, // batch size
+            50, // Smaller batch size
         )
         .await;
+        let _ = ui_tx.send(Get::SyncDone(Box::new(original_msg))).await;
     }
 
-    async fn sync_tvepisodes(&mut self, tvshowid: u32) {
-        if !self.kodi_connected {
-            return;
-        }
-
+    async fn sync_tvepisodes_bg(
+        mut client: client::Connection,
+        mut db: db::SqlConnection,
+        mut ui_tx: Sender<Get>,
+        tvshowid: u32,
+        original_msg: Get,
+    ) {
         // Get episode IDs from Kodi
         let (kodi_tx, mut kodi_rx) = channel(1);
-        self.client.send(KodiCommand::VideoLibraryGetTVEpisodeIDs {
+        client.send(KodiCommand::VideoLibraryGetTVEpisodeIDs {
             sender: kodi_tx,
             tvshowid,
         });
@@ -558,7 +615,7 @@ impl Data {
 
         // Get episode IDs from DB
         let (db_tx, db_rx) = oneshot::channel();
-        let _ = self.db.send(db::SqlCommand::GetTVEpisodeIDs {
+        let _ = db.send(db::SqlCommand::GetTVEpisodeIDs {
             sender: db_tx,
             tvshowid,
         });
@@ -585,31 +642,29 @@ impl Data {
 
         // Delete episodes no longer in Kodi
         if !deleted_ids.is_empty() {
-            let _ = self.db.send(db::SqlCommand::DeleteTVEpisodesByIDs {
+            let _ = db.send(db::SqlCommand::DeleteTVEpisodesByIDs {
                 ids: deleted_ids,
                 tvshowid,
             });
+            let _ = ui_tx.send(Get::TVEpisodes(tvshowid, -1, false)).await;
         }
 
         // Fetch new episodes in batches
-        let batch_size = 500;
+        let batch_size = 50;
         if !new_ids.is_empty() {
             for _batch_ids in new_ids.chunks(batch_size) {
                 let (tx, mut rx) = channel(1);
-                // Note: We still need to implement a VideoLibraryGetTVEpisodesByIDs command
-                // For now, just fetch them all
-                self.client.send(KodiCommand::VideoLibraryGetTVEpisodes {
+                client.send(KodiCommand::VideoLibraryGetTVEpisodesByIDs {
                     sender: tx,
-                    limit: -1,
-                    tvshowid,
+                    ids: _batch_ids.to_vec(),
                 });
 
                 if let Some(episodes) = rx.next().await {
-                    let _ = self
-                        .db
-                        .send(db::SqlCommand::InsertTVEpisodes(episodes, tvshowid));
+                    let _ = db.send(db::SqlCommand::InsertTVEpisodes(episodes));
+                    let _ = ui_tx.send(Get::TVEpisodes(tvshowid, -1, false)).await;
                 }
             }
         }
+        let _ = ui_tx.send(Get::SyncDone(Box::new(original_msg))).await;
     }
 }

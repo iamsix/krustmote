@@ -4,7 +4,7 @@ use fxhash;
 use iced::futures::channel::mpsc::Sender;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 // TODO: Investigate Cow for these Strings
 
@@ -78,6 +78,10 @@ pub enum KodiCommand {
         sender: Sender<Vec<TVEpisodeListItem>>,
         limit: i32,
         tvshowid: u32,
+    },
+    VideoLibraryGetTVEpisodesByIDs {
+        sender: Sender<Vec<TVEpisodeListItem>>,
+        ids: Vec<u32>,
     },
 
     // ID-only fetches for efficient syncing
@@ -346,7 +350,7 @@ pub struct KodiAppStatus {
     //volume: u8,
 }
 
-#[derive(Deserialize, Debug, Clone, PartialEq)]
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum MediaType {
     Video,
@@ -788,7 +792,7 @@ impl IntoListData for TVShowListItem {
 
     fn into_listdata(&self) -> crate::ListData {
         let on_click = if self.season == 1 {
-            crate::Message::GetData(data::Get::TVEpisodes(self.tvshowid, 1))
+            crate::Message::GetData(data::Get::TVEpisodes(self.tvshowid, 1, true))
         } else {
             crate::Message::GetData(data::Get::TVSeasons(self.tvshowid))
         };
@@ -828,7 +832,8 @@ impl IntoListData for TVSeasonListItem {
     }
 
     fn into_listdata(&self) -> crate::ListData {
-        let on_click = crate::Message::GetData(data::Get::TVEpisodes(self.tvshowid, self.season));
+        let on_click =
+            crate::Message::GetData(data::Get::TVEpisodes(self.tvshowid, self.season, true));
 
         crate::ListData {
             label: self.title.as_str().into(),
@@ -1040,7 +1045,7 @@ pub struct ItemVideo {
     stereomode: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Hash)]
 pub struct KodiServer {
     pub id: u8,
     pub name: String,

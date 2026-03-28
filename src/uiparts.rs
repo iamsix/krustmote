@@ -410,11 +410,11 @@ pub(crate) fn left_menu<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> {
                 container("")
             },
             button(row![icons::movie(), "Movies"].align_y(iced::Alignment::Center))
-                .on_press(Message::GetData(data::Get::Movies))
+                .on_press(Message::GetData(data::Get::Movies(true)))
                 .width(Length::Fill)
                 .style(themes::bare_button),
             button(row![icons::tv(), "TV"].align_y(iced::Alignment::Center))
-                .on_press(Message::GetData(data::Get::TVShows))
+                .on_press(Message::GetData(data::Get::TVShows(true)))
                 .width(Length::Fill)
                 .style(themes::bare_button),
             button(row![icons::settings(), "Settings"].align_y(iced::Alignment::Center))
