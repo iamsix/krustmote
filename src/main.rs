@@ -498,6 +498,24 @@ impl Krustmote {
                 // Check if this data matches our current focus.
                 // If we aren't "Loading" and the request doesn't match the top of the breadcrumb,
                 // this is a background sync result for a view we've navigated away from.
+                if let Some(Message::GetData(current_req)) = self.item_list.breadcrumb.last() {
+                    if let (data::Get::TVEpisodes(s1, e1, _), data::Get::TVEpisodes(s2, e2, _)) =
+                        (current_req, &request)
+                    {
+                        if s1 == s2 && e1 != e2 && *e2 == -1 {
+                            // Background sync for the show finished, but we are viewing a specific season.
+                            // Trigger a refresh of our specific season instead of accepting "all seasons" data.
+                            return Command::perform(
+                                {
+                                    let r = current_req.clone();
+                                    async move { r }
+                                },
+                                Message::GetData,
+                            );
+                        }
+                    }
+                }
+
                 let mut matches_breadcrumb = false;
                 if let Some(Message::GetData(current_req)) = self.item_list.breadcrumb.last() {
                     matches_breadcrumb = match (current_req, &request) {
@@ -550,35 +568,56 @@ impl Krustmote {
     fn handle_get_data(&mut self, cmd: data::Get) -> Command<Message> {
         match &mut self.state {
             State::Connected(connection, _) | State::Offline(connection) => {
+                let is_duplicate = self
+                    .item_list
+                    .breadcrumb
+                    .last()
+                    .map(|msg| {
+                        if let Message::GetData(existing_cmd) = msg {
+                            existing_cmd == &cmd
+                        } else {
+                            false
+                        }
+                    })
+                    .unwrap_or(false);
+
                 match &cmd {
                     data::Get::Movies(sync) | data::Get::TVShows(sync) => {
                         if *sync {
-                            self.item_list.breadcrumb.clear();
-                            self.item_list
-                                .breadcrumb
-                                .push(Message::GetData(cmd.clone()));
+                            if !is_duplicate {
+                                self.item_list.breadcrumb.clear();
+                                self.item_list
+                                    .breadcrumb
+                                    .push(Message::GetData(cmd.clone()));
+                            }
                             self.content_area = ContentArea::Loading;
                         }
                     }
                     data::Get::Sources => {
-                        self.item_list.breadcrumb.clear();
-                        self.item_list
-                            .breadcrumb
-                            .push(Message::GetData(cmd.clone()));
+                        if !is_duplicate {
+                            self.item_list.breadcrumb.clear();
+                            self.item_list
+                                .breadcrumb
+                                .push(Message::GetData(cmd.clone()));
+                        }
                         self.content_area = ContentArea::Loading;
                     }
                     data::Get::TVEpisodes(_, _, sync) => {
                         if *sync {
-                            self.item_list
-                                .breadcrumb
-                                .push(Message::GetData(cmd.clone()));
+                            if !is_duplicate {
+                                self.item_list
+                                    .breadcrumb
+                                    .push(Message::GetData(cmd.clone()));
+                            }
                             self.content_area = ContentArea::Loading;
                         }
                     }
                     data::Get::TVSeasons(_) | data::Get::Directory { .. } => {
-                        self.item_list
-                            .breadcrumb
-                            .push(Message::GetData(cmd.clone()));
+                        if !is_duplicate {
+                            self.item_list
+                                .breadcrumb
+                                .push(Message::GetData(cmd.clone()));
+                        }
                         self.content_area = ContentArea::Loading;
                     }
                     _ => {}
