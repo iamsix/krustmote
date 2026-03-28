@@ -5,7 +5,7 @@ use jsonrpsee::core::params::ObjectParams;
 use jsonrpsee::rpc_params;
 use jsonrpsee::ws_client::WsClientBuilder;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use iced::futures::channel::mpsc::{Receiver, Sender, channel};
@@ -19,6 +19,7 @@ use std::error::Error;
 use std::sync::Arc;
 
 use crate::koditypes::*;
+use tracing::{debug, error, info};
 
 // TODO: muncher to allow nesting?
 macro_rules! rpc_obj_params {
@@ -83,7 +84,7 @@ async fn handle_connection(mut output: Sender<Event>, mut server: Arc<KodiServer
                         state = State::Connected(client, reciever);
                     }
                     Err(err) => {
-                        dbg!(err);
+                        error!("Failed to build WS client: {:?}", err);
                         state = State::Offline(ol_reciever);
                     }
                 }
@@ -110,7 +111,7 @@ async fn handle_connection(mut output: Sender<Event>, mut server: Arc<KodiServer
             State::Connected(client, input) => {
                 select! {
                     Some(recieved) = notifications.next() => {
-                        dbg!(&recieved);
+                        debug!(?recieved, "Received WS notification");
                         let (function, data) = recieved;
 
                         let result = handle_notification(
@@ -119,8 +120,8 @@ async fn handle_connection(mut output: Sender<Event>, mut server: Arc<KodiServer
                             data
                         ).await;
 
-                        if result.is_err() {
-                            dbg!(result.err());
+                        if let Err(err) = result {
+                            error!("Notification handler error: {:?}", err);
                             state = State::Disconnected;
                         } else {
                             let _ = output.send(result.unwrap()).await;
@@ -129,29 +130,16 @@ async fn handle_connection(mut output: Sender<Event>, mut server: Arc<KodiServer
                     }
 
                     _ = poller.tick() => {
-                        // println!("Tick");
-                        let app_status =
-                            poll_kodi_app_status(client).await;
-                        if app_status.is_err() {
-                            dbg!(app_status.err());
+                        match poll_all_status(client).await {
+                            Ok(events) => {
+                                for event in events {
+                                    let _ = output.send(event).await;
+                                }
+                            }
+                            Err(err) => {
+                                error!("Polling error: {:?}", err);
                             state = State::Disconnected;
-                            // if this fails there's no need to poll anything else
-                            continue;
-                        } else {
-                            let _ = output.send(
-                                app_status.unwrap()
-                            ).await;
-                        }
-
-                        let player_props =
-                            poll_player_status(client).await;
-                        if player_props.is_err() {
-                            dbg!(player_props.err());
-                            state = State::Disconnected;
-                        } else {
-                            let _ = output.send(
-                                player_props.unwrap()
-                            ).await;
+                            }
                         }
                     }
 
@@ -160,7 +148,7 @@ async fn handle_connection(mut output: Sender<Event>, mut server: Arc<KodiServer
 
 
                     message = input.select_next_some() => {
-                        dbg!(&message);
+                        debug!(?message, "Processing Kodi command");
 
                         if let KodiCommand::ChangeServer(srv) = message {
                             server = srv;
@@ -169,17 +157,16 @@ async fn handle_connection(mut output: Sender<Event>, mut server: Arc<KodiServer
                             continue;
                         };
 
-                        let result = handle_kodi_command(
-                            message,
-                            client
-                        ).await;
-                        if result.is_err() {
-                            dbg!(result.err());
-                            // TODO! figure out when this is a command err
-                            //   vs an actual websocket connection error
-                            // state = State::Disconnected;
-                        } else {
-                            let _ = output.send(result.unwrap()).await;
+                        match handle_kodi_command(message, client).await {
+                            Ok(event) => {
+                                let _ = output.send(event).await;
+                            }
+                            Err(err) => {
+                                error!("Kodi command error: {:?}", err);
+                                if is_transport_error(&err) {
+                                    state = State::Disconnected;
+                                }
+                            }
                         }
                     }
                 }
@@ -200,6 +187,35 @@ async fn ws_subscribe(
             .expect("Subscription should always work");
         notifications.insert(name, sub);
     }
+}
+
+/// Helper to check if an error should trigger a reconnection
+fn is_transport_error(err: &Box<dyn Error + Send + Sync>) -> bool {
+    // jsonrpsee errors related to connectivity usually involve the underlying transport
+    let s = err.to_string();
+    s.contains("Restart needed") || s.contains("Closed") || s.contains("transport")
+}
+
+/// Aggregated polling for status
+async fn poll_all_status(client: &Client) -> Result<Vec<Event>, Box<dyn Error + Send + Sync>> {
+    let mut events = Vec::new();
+    events.push(poll_kodi_app_status(client).await?);
+    events.push(poll_player_status(client).await?);
+    Ok(events)
+}
+
+/// Generic helper to request a field and deserialize it
+async fn request_field<T>(
+    client: &Client,
+    method: &str,
+    params: ObjectParams,
+    field: &str,
+) -> Result<T, Box<dyn Error + Send + Sync>>
+where
+    for<'de> T: Deserialize<'de>,
+{
+    let response: Value = client.request(method, params).await?;
+    Ok(serde_json::from_value(response[field].clone())?)
 }
 
 async fn poll_kodi_app_status(client: &Client) -> Result<Event, Box<dyn Error + Send + Sync>> {
@@ -251,28 +267,20 @@ async fn handle_kodi_command(
             path,
             media_type,
         } => {
-            let response: Map<String, Value> = client
-                .request(
-                    "Files.GetDirectory",
-                    rpc_params![
-                        &path,
-                        media_type.as_str(),
-                        FILE_PROPS,
-                        ListSort {
-                            method: "date",
-                            order: "descending"
-                        } // TODO: SortType
-                    ],
-                )
-                .await?;
+            let params = rpc_obj_params!(
+                "directory" = path,
+                "media" = media_type.as_str(),
+                "properties" = FILE_PROPS,
+                "sort" = ListSort {
+                    method: "date",
+                    order: "descending"
+                }
+            );
 
-            let list: Vec<Box<dyn IntoListData + Send>> =
-                <Vec<DirList> as Deserialize>::deserialize(&response["files"])?
-                    .into_iter()
-                    .map(|v| Box::new(v) as Box<dyn IntoListData + Send>)
-                    .collect();
+            let files: Vec<DirList> =
+                request_field(client, "Files.GetDirectory", params, "files").await?;
+            let list = files.into_iter().map(|v| Box::new(v) as _).collect();
             let _ = sender.send(list).await;
-
             Ok(Event::None)
         }
 
@@ -280,15 +288,11 @@ async fn handle_kodi_command(
             mut sender,
             media_type,
         } => {
-            let response: Map<String, Value> = client
-                .request("Files.GetSources", rpc_params![media_type.as_str()])
-                .await?;
-
+            let params = rpc_obj_params!("media" = media_type.as_str());
+            let items: Vec<Sources> =
+                request_field(client, "Files.GetSources", params, "sources").await?;
             let mut sources: Vec<Box<dyn IntoListData + Send>> =
-                <Vec<Sources> as Deserialize>::deserialize(&response["sources"])?
-                    .into_iter()
-                    .map(|v| Box::new(v) as Box<dyn IntoListData + Send>)
-                    .collect();
+                items.into_iter().map(|v| Box::new(v) as _).collect();
 
             let db = Sources {
                 label: "- Database".to_string(),
@@ -297,117 +301,61 @@ async fn handle_kodi_command(
             sources.insert(0, Box::new(db));
 
             let _ = sender.send(sources).await;
-
             Ok(Event::None)
         }
 
         KodiCommand::PlayerOpen(file) => {
-            #[derive(Serialize)]
-            struct Item {
-                file: String,
-            }
-            let objitem = Item { file };
-
-            let response: String = client
-                .request("Player.Open", rpc_obj_params! {"item"=objitem})
-                .await?;
-            if response != "OK" {
-                dbg!(response);
-            };
-
+            let params = rpc_obj_params!("item" = serde_json::json!({"file": file}));
+            let _: Value = client.request("Player.Open", params).await?;
             Ok(Event::None)
         }
 
         KodiCommand::InputButtonEvent { button, keymap } => {
-            let response: String = client
-                .request(
-                    "Input.ButtonEvent",
-                    rpc_obj_params! {"button"=button, "keymap"=keymap},
-                )
-                .await?;
-            if response != "OK" {
-                dbg!(response);
-            };
-
+            let params = rpc_obj_params!("button" = button, "keymap" = keymap);
+            let _: Value = client.request("Input.ButtonEvent", params).await?;
             Ok(Event::None)
         }
 
         KodiCommand::InputExecuteAction(action) => {
-            let response: String = client
+            let _: Value = client
                 .request("Input.ExecuteAction", rpc_params![action])
                 .await?;
-            if response != "OK" {
-                dbg!(response);
-            };
-
             Ok(Event::None)
         }
 
         KodiCommand::GUIActivateWindow(window) => {
-            let response: String = client
+            let _: Value = client
                 .request("GUI.ActivateWindow", rpc_params![window])
                 .await?;
-            if response != "OK" {
-                dbg!(response);
-            };
-
             Ok(Event::None)
         }
 
         KodiCommand::PlayerGetPlayingItem(player_id) => {
-            let response: Map<String, Value> = client
-                .request(
-                    "Player.GetItem",
-                    rpc_obj_params! {
-                        "playerid"=player_id,
-                        "properties"=PLAYING_ITEM_PROPS
-                    },
-                )
-                .await?;
-
-            let playing_item = <PlayingItem as Deserialize>::deserialize(&response["item"])?;
-
-            Ok(Event::UpdatePlayingItem(playing_item))
+            let params = rpc_obj_params!("playerid" = player_id, "properties" = PLAYING_ITEM_PROPS);
+            let item: PlayingItem = request_field(client, "Player.GetItem", params, "item").await?;
+            Ok(Event::UpdatePlayingItem(item))
         }
 
         KodiCommand::PlayerSeek(player_id, time) => {
-            #[derive(Serialize)]
-            struct Time {
-                time: KodiTime,
-            }
-            let objtime = Time { time };
-            let _response: Value = client
-                .request(
-                    "Player.Seek",
-                    rpc_obj_params!("playerid" = player_id, "value" = objtime),
-                )
-                .await?;
-
-            // This returns percent/timestamp/duration but we don't really need them
-            // because we're scraping every second anyway.
+            let params = rpc_obj_params!(
+                "playerid" = player_id,
+                "value" = serde_json::json!({"time": time})
+            );
+            let _: Value = client.request("Player.Seek", params).await?;
             Ok(Event::None)
         }
 
-        // Kodi RPC kind of ignores the 'enable' field here
-        // It disables it for about 10 seconds and re-enables
-        // instead you have to set subtitle to "on" or "off" instead of an index ID.
-        // So there's a separate PlayerToggleSubtitle for that.
         KodiCommand::PlayerSetSubtitle {
             player_id,
             subtitle_index,
             enabled,
         } => {
-            let _response: Value = client
-                .request(
-                    "Player.SetSubtitle",
-                    rpc_obj_params!(
-                        "playerid" = player_id,
-                        "subtitle" = subtitle_index,
-                        "enable" = enabled
-                    ),
-                )
-                .await?;
-            dbg!(_response);
+            let params = rpc_obj_params!(
+                "playerid" = player_id,
+                "subtitle" = subtitle_index,
+                "enable" = enabled
+            );
+            let _response: Value = client.request("Player.SetSubtitle", params).await?;
             Ok(Event::None)
         }
 
@@ -419,7 +367,6 @@ async fn handle_kodi_command(
                     rpc_obj_params!("playerid" = player_id, "subtitle" = on_off),
                 )
                 .await?;
-            dbg!(_response);
             Ok(Event::None)
         }
 
@@ -433,7 +380,6 @@ async fn handle_kodi_command(
                     rpc_obj_params!("playerid" = player_id, "stream" = audio_index),
                 )
                 .await?;
-            dbg!(_response);
             Ok(Event::None)
         }
 
@@ -443,14 +389,12 @@ async fn handle_kodi_command(
                 .await?;
             // This returns 'false' for muted and 'true' for unmuted but it doesn't matter
             // since we poll for it anyway.
-            dbg!(_response);
 
             Ok(Event::None)
         }
 
         KodiCommand::InputSendText(text) => {
-            let response: Value = client.request("Input.SendText", rpc_params!(text)).await?;
-            dbg!(response);
+            let _: Value = client.request("Input.SendText", rpc_params!(text)).await?;
             Ok(Event::None)
         }
 
@@ -586,7 +530,7 @@ async fn handle_kodi_command(
             let response: Value = client
                 .request("Player.GetActivePlayers", rpc_params!())
                 .await?;
-            dbg!(response);
+            debug!(?response, "Active players");
             Ok(Event::None)
         }
 
@@ -598,7 +542,144 @@ async fn handle_kodi_command(
                     rpc_obj_params! {"playerid"=1, "properties"=PLAYER_PROPS},
                 )
                 .await?;
-            dbg!(&response);
+            debug!(?response, "Player properties");
+            Ok(Event::None)
+        }
+
+        // ID-only fetches for efficient syncing
+        KodiCommand::VideoLibraryGetMovieIDs { mut sender } => {
+            // Request with empty properties array to get just the IDs (IDs are always returned)
+            let response: Value = client
+                .request(
+                    "VideoLibrary.GetMovies",
+                    rpc_obj_params!("properties" = vec![] as Vec<&str>),
+                )
+                .await?;
+
+            let movies = <Vec<serde_json::Map<String, Value>> as Deserialize>::deserialize(
+                &response["movies"],
+            )?;
+            let ids: Vec<u32> = movies
+                .iter()
+                .filter_map(|m| {
+                    m.get("movieid")
+                        .and_then(|v| v.as_u64().map(|id| id as u32))
+                })
+                .collect();
+
+            sender.send(ids).await?;
+            Ok(Event::None)
+        }
+
+        KodiCommand::VideoLibraryGetTVShowIDs { mut sender } => {
+            // Request with empty properties array to get just the IDs (IDs are always returned)
+            let response: Value = client
+                .request(
+                    "VideoLibrary.GetTVShows",
+                    rpc_obj_params!("properties" = vec![] as Vec<&str>),
+                )
+                .await?;
+
+            let shows = <Vec<serde_json::Map<String, Value>> as Deserialize>::deserialize(
+                &response["tvshows"],
+            )?;
+            let ids: Vec<u32> = shows
+                .iter()
+                .filter_map(|s| {
+                    s.get("tvshowid")
+                        .and_then(|v| v.as_u64().map(|id| id as u32))
+                })
+                .collect();
+
+            sender.send(ids).await?;
+            Ok(Event::None)
+        }
+
+        KodiCommand::VideoLibraryGetTVEpisodeIDs {
+            mut sender,
+            tvshowid,
+        } => {
+            // Request with empty properties array to get just the IDs (IDs are always returned)
+            let response: Value = client
+                .request(
+                    "VideoLibrary.GetEpisodes",
+                    rpc_obj_params!("tvshowid" = tvshowid, "properties" = vec![] as Vec<&str>),
+                )
+                .await?;
+
+            let episodes = <Vec<serde_json::Map<String, Value>> as Deserialize>::deserialize(
+                &response["episodes"],
+            )?;
+            let ids: Vec<u32> = episodes
+                .iter()
+                .filter_map(|e| {
+                    e.get("episodeid")
+                        .and_then(|v| v.as_u64().map(|id| id as u32))
+                })
+                .collect();
+
+            sender.send(ids).await?;
+            Ok(Event::None)
+        }
+
+        KodiCommand::VideoLibraryGetMoviesByIDs { mut sender, ids } => {
+            // Fetch movies by a set of IDs - note this requires multiple requests
+            // Kodi doesn't support filtering by multiple IDs in one request
+            let mut movies = Vec::new();
+
+            for id in ids {
+                match client
+                    .request::<Value, ObjectParams>(
+                        "VideoLibrary.GetMovieDetails",
+                        rpc_obj_params!("movieid" = id, "properties" = MINIMAL_MOVIE_PROPS),
+                    )
+                    .await
+                {
+                    Ok(response) => {
+                        if let Ok(movie) =
+                            <MovieListItem as Deserialize>::deserialize(&response["moviedetails"])
+                        {
+                            movies.push(movie);
+                        }
+                    }
+                    Err(_) => {
+                        // Movie might have been deleted, skip it
+                        continue;
+                    }
+                }
+            }
+
+            sender.send(movies).await?;
+            Ok(Event::None)
+        }
+
+        KodiCommand::VideoLibraryGetTVShowsByIDs { mut sender, ids } => {
+            // Fetch TV shows by a set of IDs
+            let mut shows = Vec::new();
+
+            for id in ids {
+                match client
+                    .request::<Value, ObjectParams>(
+                        "VideoLibrary.GetTVShowDetails",
+                        rpc_obj_params!("tvshowid" = id, "properties" = MINIMAL_TV_PROPS),
+                    )
+                    .await
+                {
+                    Ok(response) => {
+                        if let Ok(show) =
+                            <TVShowListItem as Deserialize>::deserialize(&response["tvshowdetails"])
+                        {
+                            shows.push(show);
+                        }
+                    }
+                    Err(_) => {
+                        // Show might have been deleted, skip it
+                        continue;
+                    }
+                }
+            }
+
+            sender.send(shows).await?;
             Ok(Event::None)
         }
 
@@ -616,7 +697,7 @@ async fn handle_kodi_command(
 
             // let playing_item = <PlayingItem as Deserialize>::deserialize(&response["item"])
             //     .expect("PlayingItem should deserialize");
-            dbg!(response);
+            debug!(?response, "Playing item debug");
 
             Ok(Event::None)
         }
@@ -626,7 +707,7 @@ async fn handle_kodi_command(
             let response: String = client
                 .request("GUI.ShowNotification", rpc_params!["test", "rust"])
                 .await?;
-            dbg!(response);
+            debug!(?response, "Test notification response");
             Ok(Event::None)
         }
     }
@@ -654,7 +735,7 @@ async fn handle_notification(
 
         "Input.OnInputRequested" => {
             let info = data?;
-            dbg!(&info);
+            debug!(?info, "Input requested notification");
             let req = info["data"]["value"]
                 .as_str()
                 .expect("InputReq Notification should contain this value");
@@ -663,7 +744,7 @@ async fn handle_notification(
         }
 
         _ => {
-            dbg!(function, data.unwrap());
+            debug!(function, data = ?data.ok(), "Unhandled notification");
             Ok(Event::None)
         }
     }

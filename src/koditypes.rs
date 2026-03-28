@@ -11,6 +11,12 @@ use std::sync::{Arc, OnceLock};
 // TODO: Massively refactor this file.
 //       Lots of duplicated code etc.
 
+pub const POSTER_W: u32 = 80;
+pub const POSTER_H: u32 = 120;
+pub const THUMB_W: u32 = 192;
+pub const THUMB_H: u32 = 108;
+pub const ICON_SIZE: u32 = 80;
+
 #[derive(Debug, Clone)]
 pub enum KodiCommand {
     ChangeServer(Arc<KodiServer>),
@@ -74,6 +80,26 @@ pub enum KodiCommand {
         tvshowid: u32,
     },
 
+    // ID-only fetches for efficient syncing
+    VideoLibraryGetMovieIDs {
+        sender: Sender<Vec<u32>>,
+    },
+    VideoLibraryGetTVShowIDs {
+        sender: Sender<Vec<u32>>,
+    },
+    VideoLibraryGetTVEpisodeIDs {
+        sender: Sender<Vec<u32>>,
+        tvshowid: u32,
+    },
+    VideoLibraryGetMoviesByIDs {
+        sender: Sender<Vec<MovieListItem>>,
+        ids: Vec<u32>,
+    },
+    VideoLibraryGetTVShowsByIDs {
+        sender: Sender<Vec<TVShowListItem>>,
+        ids: Vec<u32>,
+    },
+
     // only used for testing/debug:
     PlayerGetPlayingItemDebug(u8),
     Test,
@@ -108,7 +134,12 @@ impl Clone for Box<dyn IntoListData + Send> {
     }
 }
 
-#[derive(Default, Debug)]
+pub const ICON_FOLDER: &str = "image://DefaultFolder.png/";
+pub const ICON_FILE: &str = "image://DefaultFile.png/";
+pub const HASH_FOLDER: usize = 1;
+pub const HASH_FILE: usize = 2;
+
+#[derive(Default, Debug, Clone)]
 pub struct Pic {
     pub url: Option<String>,
     // pub namehash: String,
@@ -116,6 +147,43 @@ pub struct Pic {
     //                         otoh hex string could be nice for filename hax
     pub h: u32,
     pub w: u32,
+}
+
+impl Pic {
+    pub fn from_path(svr: &Option<Arc<KodiServer>>, path: &str, w: u32, h: u32) -> Self {
+        if path == ICON_FOLDER {
+            return Pic {
+                url: None,
+                namehash: HASH_FOLDER,
+                w,
+                h,
+            };
+        }
+        if path == ICON_FILE {
+            return Pic {
+                url: None,
+                namehash: HASH_FILE,
+                w,
+                h,
+            };
+        }
+
+        let encoded = urlencoding::encode(path);
+        let url = svr
+            .as_ref()
+            .map(|s| format!("{}/image/{}", s.http_url(), encoded));
+        let namehash = fxhash::hash(&encoded);
+        Pic {
+            url,
+            namehash,
+            w,
+            h,
+        }
+    }
+}
+
+fn get_filename(path: &str) -> &str {
+    path.rsplit_once('/').map(|(_, f)| f).unwrap_or("")
 }
 
 pub const PLAYER_PROPS: [&'static str; 17] = [
@@ -321,7 +389,7 @@ impl IntoListData for Sources {
 
     fn into_listdata(&self) -> crate::ListData {
         crate::ListData {
-            label: self.label.clone(),
+            label: self.label.as_str().into(),
             on_click: crate::Message::GetData(data::Get::Directory {
                 path: self.file.clone(),
                 media_type: MediaType::Video,
@@ -329,7 +397,7 @@ impl IntoListData for Sources {
             play_count: None,
             bottom_right: None,
             bottom_left: None,
-            image: Arc::new(OnceLock::new()),
+            image: None,
         }
     }
 
@@ -432,14 +500,7 @@ impl IntoListData for DirList {
         } else if self.size > 0 {
             Some(format!("{:.1} MB", (self.size as f64 / 1024.0 / 1024.0)))
         } else if let Some(rating) = self.rating {
-            // There's likely a better approach to parsing this.
-            let pos = self.file.chars().rev().position(|c| c == '/');
-            let filename = if let Some(pos) = pos {
-                let position = self.file.len() - pos;
-                &self.file[position..]
-            } else {
-                ""
-            };
+            let filename = get_filename(&self.file);
 
             if rating > 0.0 {
                 Some(format!("Rating: {:.1} - {}", rating, filename))
@@ -461,7 +522,7 @@ impl IntoListData for DirList {
         };
 
         crate::ListData {
-            label,
+            label: label.into(),
             on_click: match self.filetype.as_str() {
                 "directory" => crate::Message::GetData(data::Get::Directory {
                     path: self.file.clone(),
@@ -473,43 +534,26 @@ impl IntoListData for DirList {
             play_count: self.playcount,
             bottom_right,
             bottom_left,
-            image: Arc::new(OnceLock::new()),
+            image: None,
         }
     }
 
     fn get_art_data(&self, svr: &Option<Arc<KodiServer>>) -> Pic {
-        let (path, w, h) = if self.type_ == VideoType::Episode && self.art.thumb.is_some() {
-            (self.art.thumb.as_ref().unwrap().as_str(), 192, 108)
-        } else if self.art.poster.is_some() {
-            (self.art.poster.as_ref().unwrap().as_str(), 80, 120)
-        } else {
-            let (icon_path, namehash) = if self.filetype.eq_ignore_ascii_case("directory") {
-                ("image://DefaultFolder.png/", 1)
-            } else {
-                ("image://DefaultFile.png/", 2)
-            };
-            return Pic {
-                url: svr
-                    .as_ref()
-                    .map(|s| format!("{}/image/{}", s.http_url(), icon_path)),
-                namehash,
-                h: 120,
-                w: 80,
-            };
-        };
-
-        let encoded_path = urlencoding::encode(path);
-        let url = svr
-            .as_ref()
-            .map(|s| format!("{}/image/{}", s.http_url(), encoded_path));
-        let namehash = fxhash::hash(&encoded_path);
-
-        Pic {
-            url,
-            namehash,
-            w,
-            h,
+        if let Some(thumb) = &self.art.thumb {
+            if self.type_ == VideoType::Episode {
+                return Pic::from_path(svr, thumb, THUMB_W, THUMB_H);
+            }
         }
+        if let Some(poster) = &self.art.poster {
+            return Pic::from_path(svr, poster, POSTER_W, POSTER_H);
+        }
+
+        let icon = if self.filetype.eq_ignore_ascii_case("directory") {
+            ICON_FOLDER
+        } else {
+            ICON_FILE
+        };
+        Pic::from_path(svr, icon, ICON_SIZE, ICON_SIZE)
     }
 
     fn label_contains(&self, find: &String) -> bool {
@@ -751,31 +795,21 @@ impl IntoListData for TVShowListItem {
 
         let bottom_left = Some(format!("Rating: {:.1}", self.rating));
         crate::ListData {
-            label: self.title.clone(),
+            label: self.title.as_str().into(),
             on_click,
             play_count: Some(self.playcount),
             bottom_left,
             bottom_right: Some(self.genre.join(", ")),
-            image: Arc::new(OnceLock::new()),
+            image: None,
         }
     }
 
     fn get_art_data(&self, svr: &Option<Arc<KodiServer>>) -> Pic {
-        if self.art.poster.is_some() {
-            let poster = self.art.poster.as_ref().unwrap();
-            let poster = urlencoding::encode(poster.as_str());
-            let namehash = fxhash::hash(&poster);
-            Pic {
-                url: svr
-                    .as_ref()
-                    .map(|s| format!("{}/image/{}", s.http_url(), poster)),
-                namehash,
-                w: 80,
-                h: 120,
-            }
-        } else {
-            Pic::default()
-        }
+        self.art
+            .poster
+            .as_ref()
+            .map(|p| Pic::from_path(svr, p, POSTER_W, POSTER_H))
+            .unwrap_or_else(|| Pic::from_path(svr, ICON_FOLDER, POSTER_W, POSTER_H))
     }
 
     fn label_contains(&self, find: &String) -> bool {
@@ -797,25 +831,17 @@ impl IntoListData for TVSeasonListItem {
         let on_click = crate::Message::GetData(data::Get::TVEpisodes(self.tvshowid, self.season));
 
         crate::ListData {
-            label: self.title.clone(),
+            label: self.title.as_str().into(),
             on_click,
             play_count: None,
             bottom_left: None,
             bottom_right: Some(format!("{} Episodes", self.episode)),
-            image: Arc::new(OnceLock::new()),
+            image: None,
         }
     }
 
     fn get_art_data(&self, svr: &Option<Arc<KodiServer>>) -> Pic {
-        let poster = urlencoding::encode("image://DefaultFolder.png/");
-        Pic {
-            url: svr
-                .as_ref()
-                .map(|s| format!("{}/image/{}", s.http_url(), poster)),
-            namehash: 1,
-            w: 80,
-            h: 120,
-        }
+        Pic::from_path(svr, ICON_FOLDER, POSTER_W, POSTER_H)
     }
 
     fn label_contains(&self, find: &String) -> bool {
@@ -835,44 +861,27 @@ impl IntoListData for TVEpisodeListItem {
     fn into_listdata(&self) -> crate::ListData {
         let on_click = crate::Message::KodiReq(KodiCommand::PlayerOpen(self.file.clone()));
 
-        // There's likely a better approach to parsing this.
-        let pos = self.file.chars().rev().position(|c| c == '/');
-        let filename = if let Some(pos) = pos {
-            let position = self.file.len() - pos;
-            &self.file[position..]
-        } else {
-            ""
-        };
+        let filename = get_filename(&self.file);
         let bottom_left = Some(format!("Rating: {:.1} - {}", self.rating, filename));
 
         let label = format!("S{:02}E{:02} - {}", self.season, self.episode, self.title,);
 
         crate::ListData {
-            label,
+            label: label.into(),
             on_click,
             play_count: Some(self.playcount),
             bottom_left,
             bottom_right: Some(self.firstaired.clone()),
-            image: Arc::new(OnceLock::new()),
+            image: None,
         }
     }
 
     fn get_art_data(&self, svr: &Option<Arc<KodiServer>>) -> Pic {
-        if self.art.thumb.is_some() {
-            let thumb = self.art.thumb.as_ref().unwrap();
-            let thumb = urlencoding::encode(thumb.as_str());
-            let namehash = fxhash::hash(&thumb);
-            Pic {
-                url: svr
-                    .as_ref()
-                    .map(|s| format!("{}/image/{}", s.http_url(), thumb)),
-                namehash,
-                w: 192,
-                h: 108,
-            }
-        } else {
-            Pic::default()
-        }
+        self.art
+            .thumb
+            .as_ref()
+            .map(|t| Pic::from_path(svr, t, THUMB_W, THUMB_H))
+            .unwrap_or_else(|| Pic::from_path(svr, ICON_FILE, THUMB_W, THUMB_H))
     }
 
     fn label_contains(&self, find: &String) -> bool {
@@ -921,42 +930,25 @@ impl IntoListData for MovieListItem {
     fn into_listdata(&self) -> crate::ListData {
         let on_click = crate::Message::KodiReq(KodiCommand::PlayerOpen(self.file.clone()));
 
-        // There's likely a better approach to parsing this.
-        let pos = self.file.chars().rev().position(|c| c == '/');
-        let filename = if let Some(pos) = pos {
-            let position = self.file.len() - pos;
-            &self.file[position..]
-        } else {
-            ""
-        };
+        let filename = get_filename(&self.file);
 
         let bottom_left = Some(format!("Rating: {:.1} - {}", self.rating, filename));
         crate::ListData {
-            label: self.title.clone(),
+            label: self.title.as_str().into(),
             on_click,
             play_count: Some(self.playcount),
             bottom_left,
             bottom_right: Some(self.year.to_string()),
-            image: Arc::new(OnceLock::new()),
+            image: None,
         }
     }
 
     fn get_art_data(&self, svr: &Option<Arc<KodiServer>>) -> Pic {
-        if self.art.poster.is_some() {
-            let poster = self.art.poster.as_ref().unwrap();
-            let poster = urlencoding::encode(poster.as_str());
-            let namehash = fxhash::hash(&poster);
-            Pic {
-                url: svr
-                    .as_ref()
-                    .map(|s| format!("{}/image/{}", s.http_url(), poster)),
-                namehash,
-                w: 80,
-                h: 120,
-            }
-        } else {
-            Pic::default()
-        }
+        self.art
+            .poster
+            .as_ref()
+            .map(|p| Pic::from_path(svr, p, POSTER_W, POSTER_H))
+            .unwrap_or_else(|| Pic::from_path(svr, ICON_FILE, POSTER_W, POSTER_H))
     }
 
     fn label_contains(&self, find: &String) -> bool {

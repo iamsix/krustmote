@@ -1,7 +1,3 @@
-// TODO: DATA LAYER
-//   datalayer will basically be the 1 subscription that handles all data
-// unfortunately leads to lots of boilerplating but should be useful later
-
 // Front end really only recieves ListData + kodistatus
 //   Note ListData can be from any data source, it's just a list
 // Front end can send kodireq for remote controls (need to clone producer?)
@@ -16,18 +12,6 @@
 //          maybe check first, update DB if necessary then return always?
 //     if not in DB then it then pulls data from kodi
 //        pushes data to DB then returns data to UI.
-// Using MPSC channels for this is kind of confusing/complicated though
-// data.gettvshows > db.getshows > data.rxdbshows > kodi.getlastdate >
-//   data.rxkodidate validated (but how I list my rxdbshows..) > ui.showlist
-//   OR
-//   data.rxkodidate outdated > kodi.getshows > data.rxkodishows > db.updateshows + db.getshows
-//     (now I've looped and need some way to deal with that..)
-// I think I need to use oneshots to make this all more linear in a single gettvshows fn
-
-// note it's probably easier to do something like last-10 ordered by dateadded every time
-// throw it out if I didn't need it, but if I did I have it already
-// if datestamp never matches any of the 10 throw out the entire db and re-pull maybe..
-// minorly complicates the logic here but probably better?
 
 use std::sync::Arc;
 
@@ -41,6 +25,7 @@ use iced::futures::{SinkExt, Stream, StreamExt};
 use iced::stream;
 use std::error::Error;
 use tokio::select;
+use tracing::{debug, error, info};
 
 // input messages from UI
 #[derive(Debug, Clone)]
@@ -107,7 +92,7 @@ impl Data {
         match Self::initialize_data().await {
             Ok(data) => data,
             Err(err) => {
-                dbg!(err);
+                error!("Data initialization failed: {:?}", err);
                 panic!("Failed")
             }
         }
@@ -190,15 +175,15 @@ impl Data {
 
                     let res = self.handle_kodi(&mut output, kodi_msg).await;
                     if res.is_err() {
-                        dbg!(res.err());
+                        error!("Kodi handler error: {:?}", res.err());
                     }
                 }
 
                 msg = reciever.select_next_some() => {
-                    dbg!(&msg);
+                    debug!(?msg, "Handling UI command");
                     let res = self.handle_cmd(&mut output, msg).await;
                     if res.is_err() {
-                        dbg!(res.err());
+                        error!("Command handler error: {:?}", res.err());
                     }
                 }
             }
@@ -459,94 +444,172 @@ impl Data {
     }
 
     // might make this also take sample size (instead of hardcoding 20)
-    async fn sync_items<T, K, D, I, R>(
+    async fn sync_items_by_ids<T, K, B, D, I, G>(
         &mut self,
-        kodi_command: K,
-        date_added: D,
-        db_command: I,
-        recent_command: R,
+        get_kodi_ids: K,
+        get_batch: B,
+        db_delete_ids: D,
+        db_insert: I,
+        get_db_ids: G,
+        batch_size: i32,
     ) where
-        T: Clone + Send + 'static, // Type of items (Movie / TVShow / etc)
-        K: Fn(Sender<Vec<T>>, i32) -> KodiCommand, // VideoLibraryGetT command
-        D: Fn(&T, &String) -> bool, // bool T.dateadded == dbdate
-        I: Fn(Vec<T>) -> db::SqlCommand, // Insert DB command
-        R: Fn(oneshot::Sender<String>) -> db::SqlCommand, // GetRecentT DB cmd
+        T: Clone + Send + 'static,
+        K: Fn(Sender<Vec<u32>>) -> KodiCommand,
+        B: Fn(Sender<Vec<T>>, Vec<u32>) -> KodiCommand,
+        D: Fn(Vec<u32>) -> db::SqlCommand,
+        I: Fn(Vec<T>) -> db::SqlCommand,
+        G: Fn(oneshot::Sender<Vec<u32>>) -> db::SqlCommand,
     {
         if !self.kodi_connected {
             return;
         }
 
-        let (tx, rx) = oneshot::channel();
-        let _ = self.db.send(recent_command(tx)); // GetMostRecentTDate
-        let dbdate_result = rx.await;
-
+        // Step 1: Get all IDs from Kodi
         let (kodi_tx, mut kodi_rx) = channel(1);
-
-        let items = match dbdate_result {
-            Ok(dbdate) => {
-                self.client.send(kodi_command(kodi_tx.clone(), 20)); // sample
-
-                let recent_items = kodi_rx
-                    .next()
-                    .await
-                    .expect("Kodi should be online/working if this was called");
-
-                if !recent_items.iter().any(|item| date_added(&item, &dbdate)) {
-                    self.client.send(kodi_command(kodi_tx, -1)); // All items
-                    kodi_rx.next().await
-                } else {
-                    if date_added(&recent_items[0], &dbdate) {
-                        None
-                    } else {
-                        Some(recent_items)
-                    }
-                }
-            }
-            _ => {
-                self.client.send(kodi_command(kodi_tx, -1)); // All items
-                kodi_rx.next().await
-            }
+        self.client.send(get_kodi_ids(kodi_tx));
+        let kodi_ids = match kodi_rx.next().await {
+            Some(ids) => ids,
+            None => return,
         };
 
-        if let Some(items) = items {
-            let _ = self.db.send(db_command(items)); // InsertT to db
+        // Step 2: Get all IDs from DB
+        let (db_tx, db_rx) = oneshot::channel();
+        let _ = self.db.send(get_db_ids(db_tx));
+        let db_ids = match db_rx.await {
+            Ok(ids) => ids,
+            Err(_) => return,
+        };
+
+        // Step 3: Compute new, deleted, and existing IDs
+        let kodi_ids_set: std::collections::HashSet<u32> = kodi_ids.iter().cloned().collect();
+        let db_ids_set: std::collections::HashSet<u32> = db_ids.iter().cloned().collect();
+
+        let new_ids: Vec<u32> = kodi_ids
+            .iter()
+            .filter(|id| !db_ids_set.contains(id))
+            .cloned()
+            .collect();
+        let deleted_ids: Vec<u32> = db_ids
+            .iter()
+            .filter(|id| !kodi_ids_set.contains(id))
+            .cloned()
+            .collect();
+
+        // Step 4: Delete items no longer in Kodi
+        if !deleted_ids.is_empty() {
+            let _ = self.db.send(db_delete_ids(deleted_ids));
+        }
+
+        // Step 5: Fetch new items in batches
+        if !new_ids.is_empty() {
+            for _batch_ids in new_ids.chunks(batch_size as usize) {
+                let (tx, mut rx) = channel(1);
+                self.client.send(get_batch(tx, _batch_ids.to_vec()));
+
+                if let Some(items) = rx.next().await {
+                    let _ = self.db.send(db_insert(items));
+                }
+            }
         }
     }
 
     async fn sync_movies(&mut self) {
-        self.sync_items(
-            |sender, limit| KodiCommand::VideoLibraryGetMovies { sender, limit },
-            |item, dbdate| item.dateadded == *dbdate,
+        self.sync_items_by_ids(
+            |sender| KodiCommand::VideoLibraryGetMovieIDs { sender },
+            |sender, ids| KodiCommand::VideoLibraryGetMoviesByIDs { sender, ids },
+            |ids| db::SqlCommand::DeleteMoviesByIDs(ids),
             |movies| db::SqlCommand::InsertMovies(movies),
-            |sender| db::SqlCommand::GetMostRecentMovieDate { sender },
+            |sender| db::SqlCommand::GetMovieIDs { sender },
+            500, // batch size
         )
         .await;
     }
 
     async fn sync_tvshows(&mut self) {
-        self.sync_items(
-            |tx, limit| KodiCommand::VideoLibraryGetTVShows { sender: tx, limit },
-            |item, dbdate| item.dateadded == *dbdate,
+        self.sync_items_by_ids(
+            |sender| KodiCommand::VideoLibraryGetTVShowIDs { sender },
+            |sender, ids| KodiCommand::VideoLibraryGetTVShowsByIDs { sender, ids },
+            |ids| db::SqlCommand::DeleteTVShowsByIDs(ids),
             |tvshows| db::SqlCommand::InsertTVShows {
                 tvshows,
-                do_clean: true,
+                do_clean: false, // We handle cleanup via ID deletion now
             },
-            |sender| db::SqlCommand::GetMostRecentShowDate { sender },
+            |sender| db::SqlCommand::GetTVShowIDs { sender },
+            500, // batch size
         )
         .await;
     }
 
     async fn sync_tvepisodes(&mut self, tvshowid: u32) {
-        self.sync_items(
-            |sender, limit| KodiCommand::VideoLibraryGetTVEpisodes {
-                sender,
-                limit,
+        if !self.kodi_connected {
+            return;
+        }
+
+        // Get episode IDs from Kodi
+        let (kodi_tx, mut kodi_rx) = channel(1);
+        self.client.send(KodiCommand::VideoLibraryGetTVEpisodeIDs {
+            sender: kodi_tx,
+            tvshowid,
+        });
+        let kodi_episode_ids = match kodi_rx.next().await {
+            Some(ids) => ids,
+            None => return,
+        };
+
+        // Get episode IDs from DB
+        let (db_tx, db_rx) = oneshot::channel();
+        let _ = self.db.send(db::SqlCommand::GetTVEpisodeIDs {
+            sender: db_tx,
+            tvshowid,
+        });
+        let db_episode_ids = match db_rx.await {
+            Ok(ids) => ids,
+            Err(_) => return,
+        };
+
+        // Find new and deleted episodes
+        let kodi_ids_set: std::collections::HashSet<u32> =
+            kodi_episode_ids.iter().cloned().collect();
+        let db_ids_set: std::collections::HashSet<u32> = db_episode_ids.iter().cloned().collect();
+
+        let new_ids: Vec<u32> = kodi_episode_ids
+            .iter()
+            .filter(|id| !db_ids_set.contains(id))
+            .cloned()
+            .collect();
+        let deleted_ids: Vec<u32> = db_episode_ids
+            .iter()
+            .filter(|id| !kodi_ids_set.contains(id))
+            .cloned()
+            .collect();
+
+        // Delete episodes no longer in Kodi
+        if !deleted_ids.is_empty() {
+            let _ = self.db.send(db::SqlCommand::DeleteTVEpisodesByIDs {
+                ids: deleted_ids,
                 tvshowid,
-            },
-            |item, dbdate| item.dateadded == *dbdate,
-            |episodes| db::SqlCommand::InsertTVEpisodes(episodes, tvshowid),
-            |sender| db::SqlCommand::GetMostRecentEpisodeDate { sender, tvshowid },
-        )
-        .await;
+            });
+        }
+
+        // Fetch new episodes in batches
+        let batch_size = 500;
+        if !new_ids.is_empty() {
+            for _batch_ids in new_ids.chunks(batch_size) {
+                let (tx, mut rx) = channel(1);
+                // Note: We still need to implement a VideoLibraryGetTVEpisodesByIDs command
+                // For now, just fetch them all
+                self.client.send(KodiCommand::VideoLibraryGetTVEpisodes {
+                    sender: tx,
+                    limit: -1,
+                    tvshowid,
+                });
+
+                if let Some(episodes) = rx.next().await {
+                    let _ = self
+                        .db
+                        .send(db::SqlCommand::InsertTVEpisodes(episodes, tvshowid));
+                }
+            }
+        }
     }
 }

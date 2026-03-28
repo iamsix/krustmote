@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 // use iced::widget::scrollable::Id;
 use iced::widget::{center, column, container, image, mouse_area, row, scrollable, stack};
 use iced::widget::{opaque, operation};
@@ -14,8 +16,14 @@ use directories_next::ProjectDirs;
 use indexmap::IndexMap;
 use std::error::Error;
 use std::fs as stdfs;
+use std::sync::Mutex;
 use std::sync::{Arc, LazyLock, OnceLock};
 use tokio;
+use tracing::{debug, error, info};
+use tracing_subscriber::Layer;
+use tracing_subscriber::filter::Targets;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 mod client;
 mod data;
@@ -29,12 +37,19 @@ mod uiparts;
 use koditypes::*;
 
 static SEM: Semaphore = Semaphore::const_new(10);
-const ITEM_HEIGHT: u32 = 55;
+pub const ITEM_HEIGHT: u32 = 55;
+const MENU_WIDTH_OPEN: u32 = 120;
+const DEFAULT_IMAGE_W: u32 = 80;
+const DEFAULT_IMAGE_H: u32 = 120;
+
 static BLANK_IMAGE: OnceLock<image::Handle> = OnceLock::new();
 static PROJECT_DIRS: LazyLock<ProjectDirs> = LazyLock::new(|| {
     ProjectDirs::from("ca", "sixis", "Krustmote")
         .expect("Unlikely to ever run on an OS that doesn't support it")
 });
+
+static DECODED_IMAGE_CACHE: LazyLock<Mutex<IndexMap<usize, image::Handle>>> =
+    LazyLock::new(|| Mutex::new(IndexMap::with_capacity(100)));
 
 fn main() -> iced::Result {
     let icon = include_bytes!("../icon.png");
@@ -46,7 +61,31 @@ fn main() -> iced::Result {
         },
     );
 
-    let _ = BLANK_IMAGE.set(image::Handle::from_rgba(80, 120, vec![0; 38_400]));
+    // Setup rolling file appender
+    let log_dir = PROJECT_DIRS.data_dir();
+    let file_appender = tracing_appender::rolling::daily(log_dir, "krustmote.log");
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+
+    // Define which crates we want to hear from
+    let filter = Targets::new()
+        .with_target("krustmote", tracing::Level::DEBUG)
+        .with_target("jsonrpsee", tracing::Level::DEBUG);
+
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer().with_filter(filter.clone())) // Log to stdout
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false) // Disable colors in file logs
+                .with_writer(non_blocking)
+                .with_filter(filter),
+        ) // Log to file
+        .init();
+
+    let _ = BLANK_IMAGE.set(image::Handle::from_rgba(
+        DEFAULT_IMAGE_W,
+        DEFAULT_IMAGE_H,
+        vec![0; (DEFAULT_IMAGE_W * DEFAULT_IMAGE_H * 4) as usize],
+    ));
     iced::application(Krustmote::new, Krustmote::update, Krustmote::view)
         .subscription(Krustmote::subscription)
         .window(window)
@@ -69,6 +108,7 @@ struct Krustmote {
 #[derive(Default)]
 struct ItemList {
     raw_data: Vec<Box<dyn IntoListData + Send>>,
+    filtered_indices: Vec<usize>,
     virtual_list: IndexMap<usize, ListData>,
     list_title: String,
     breadcrumb: Vec<Message>,
@@ -108,13 +148,13 @@ struct KodiStatus {
 
 #[derive(Debug)]
 pub struct ListData {
-    label: String,
+    label: Arc<str>,
     on_click: Message,
     play_count: Option<i16>,
     // content_area: Option<String>, // container/element instead?
     bottom_left: Option<String>,  // container/element?
     bottom_right: Option<String>, // container/element?
-    image: Arc<OnceLock<image::Handle>>,
+    image: Option<image::Handle>,
 }
 
 #[derive(Debug, Clone)]
@@ -139,6 +179,8 @@ enum Message {
     SubtitleToggle(bool),
     AudioStreamPicked(AudioStream),
     SendTextInput(String),
+    ImageLoaded { index: usize, handle: image::Handle },
+    None,
 }
 
 #[derive(Debug)]
@@ -152,12 +194,12 @@ impl Krustmote {
     fn new() -> (Self, Command<Message>) {
         let res = make_cache_dir();
         if res.is_err() {
-            dbg!(res.err());
+            error!("Failed to create cache directory: {:?}", res.err());
         }
         (
             Self {
                 state: State::Disconnected,
-                menu_width: 120,
+                menu_width: MENU_WIDTH_OPEN,
                 kodi_status: Default::default(),
                 item_list: Default::default(),
                 slider_grabbed: false,
@@ -209,7 +251,11 @@ impl Krustmote {
 
             Message::ToggleLeftMenu => {
                 // TODO : Fancy animation by subtracting until 0 etc. maybe.
-                self.menu_width = if self.menu_width == 0 { 120 } else { 0 };
+                self.menu_width = if self.menu_width == 0 {
+                    MENU_WIDTH_OPEN
+                } else {
+                    0
+                };
             }
 
             Message::HideModalAndKodiReq(cmd) => {
@@ -243,7 +289,7 @@ impl Krustmote {
                 self.item_list.start_offset = offset.saturating_sub(1);
 
                 if old != self.item_list.start_offset {
-                    self.update_virtual_list();
+                    return self.update_virtual_list();
                 }
             }
 
@@ -300,9 +346,17 @@ impl Krustmote {
                 self.item_list.filter = filter;
                 self.item_list.start_offset = 0;
                 self.item_list.virtual_list = IndexMap::new();
-                self.update_virtual_list();
 
-                return Command::batch(cmds);
+                self.recompute_filter();
+                let art_task = self.update_virtual_list();
+
+                return Command::batch(vec![Command::batch(cmds), art_task]);
+            }
+
+            Message::ImageLoaded { index, handle } => {
+                if let Some(item) = self.item_list.virtual_list.get_mut(&index) {
+                    item.image = Some(handle);
+                }
             }
 
             Message::SliderChanged(new) => {
@@ -323,97 +377,12 @@ impl Krustmote {
             }
 
             Message::DataEvent(event) => {
-                // dbg!(&event);
-                match event {
-                    data::DataEvent::Offline(connection) => {
-                        self.kodi_status.active_player_id = None;
-                        self.state = State::Offline(connection);
-
-                        return Command::perform(async {}, |_| {
-                            Message::GetData(data::Get::KodiServers)
-                        });
-                    }
-
-                    data::DataEvent::Online(conn, kodiconn) => {
-                        self.state = State::Connected(conn, kodiconn);
-                    }
-
-                    data::DataEvent::Servers(servers) => {
-                        // dbg!(&servers);
-                        if servers.len() == 0 {
-                            let new_server = settingsui::Settings::new();
-                            self.content_area = ContentArea::Settings(new_server);
-                        } else {
-                            // We currently only care about 1 server until we
-                            // have the settings table to get the selected server
-                            self.kodi_status.server = Some(Arc::new(servers[0].clone()));
-                            // self.content_area = ContentArea::Files;
-                        }
-                    }
-
-                    data::DataEvent::ListData { title, data } => {
-                        if data.is_empty() {
-                            dbg!("Empty list:", &title);
-                        }
-
-                        self.item_list.list_title = title;
-                        self.item_list.raw_data = data;
-
-                        self.item_list.filter = "".to_string();
-                        self.item_list.start_offset = 0;
-
-                        self.item_list.virtual_list = IndexMap::new();
-                        self.update_virtual_list();
-
-                        self.content_area = ContentArea::Files;
-
-                        return operation::snap_to(
-                            "files",
-                            scrollable::RelativeOffset { x: 0.0, y: 0.0 },
-                        );
-                    }
-
-                    data::DataEvent::KodiStatus(kodistatus) => {
-                        if !self.slider_grabbed {
-                            self.kodi_status = kodistatus;
-                        } else {
-                            let selected_time = self.kodi_status.player_props.time.clone();
-                            self.kodi_status = kodistatus;
-                            self.kodi_status.player_props.time = selected_time;
-                        }
-                    }
-
-                    data::DataEvent::InputRequested(input) => {
-                        self.send_text = input;
-                        self.modal = Modals::RequestText;
-                    }
-                }
+                return self.handle_data_event(event);
             }
 
-            Message::GetData(cmd) => match &mut self.state {
-                State::Connected(connection, _) | State::Offline(connection) => {
-                    match &cmd {
-                        data::Get::Movies | data::Get::TVShows | data::Get::Sources => {
-                            self.item_list.breadcrumb.clear();
-                            self.item_list
-                                .breadcrumb
-                                .push(Message::GetData(cmd.clone()));
-                            self.content_area = ContentArea::Loading;
-                        }
-                        data::Get::TVEpisodes(_, _)
-                        | data::Get::TVSeasons(_)
-                        | data::Get::Directory { .. } => {
-                            self.item_list
-                                .breadcrumb
-                                .push(Message::GetData(cmd.clone()));
-                            self.content_area = ContentArea::Loading;
-                        }
-                        _ => {}
-                    }
-                    connection.send(cmd);
-                }
-                _ => {}
-            },
+            Message::GetData(cmd) => {
+                return self.handle_get_data(cmd);
+            }
 
             Message::KodiReq(command) => match &mut self.state {
                 State::Connected(_, connection) => {
@@ -497,72 +466,179 @@ impl Krustmote {
         command.expect("List should have an entry if this is callable")
     }
 
-    fn update_virtual_list(&mut self) {
-        self.item_list.filtered_count = 0;
-        for (i, file) in self
+    fn handle_data_event(&mut self, event: data::DataEvent) -> Command<Message> {
+        match event {
+            data::DataEvent::Offline(connection) => {
+                self.kodi_status.active_player_id = None;
+                self.state = State::Offline(connection);
+                Command::perform(async {}, |_| Message::GetData(data::Get::KodiServers))
+            }
+            data::DataEvent::Online(conn, kodiconn) => {
+                self.state = State::Connected(conn, kodiconn);
+                Command::none()
+            }
+            data::DataEvent::Servers(servers) => {
+                if servers.is_empty() {
+                    let new_server = settingsui::Settings::new();
+                    self.content_area = ContentArea::Settings(new_server);
+                } else {
+                    self.kodi_status.server = Some(Arc::new(servers[0].clone()));
+                }
+                Command::none()
+            }
+            data::DataEvent::ListData { title, data } => {
+                self.item_list.list_title = title;
+                self.item_list.raw_data = data;
+                self.item_list.filter = String::new();
+                self.item_list.start_offset = 0;
+                self.item_list.virtual_list.clear();
+
+                self.recompute_filter();
+                let art_task = self.update_virtual_list();
+                self.content_area = ContentArea::Files;
+
+                Command::batch(vec![
+                    art_task,
+                    operation::snap_to("files", scrollable::RelativeOffset { x: 0.0, y: 0.0 }),
+                ])
+            }
+            data::DataEvent::KodiStatus(kodistatus) => {
+                if !self.slider_grabbed {
+                    self.kodi_status = kodistatus;
+                } else {
+                    let selected_time = self.kodi_status.player_props.time.clone();
+                    self.kodi_status = kodistatus;
+                    self.kodi_status.player_props.time = selected_time;
+                }
+                Command::none()
+            }
+            data::DataEvent::InputRequested(input) => {
+                self.send_text = input;
+                self.modal = Modals::RequestText;
+                Command::none()
+            }
+        }
+    }
+
+    fn handle_get_data(&mut self, cmd: data::Get) -> Command<Message> {
+        match &mut self.state {
+            State::Connected(connection, _) | State::Offline(connection) => {
+                match &cmd {
+                    data::Get::Movies | data::Get::TVShows | data::Get::Sources => {
+                        self.item_list.breadcrumb.clear();
+                        self.item_list
+                            .breadcrumb
+                            .push(Message::GetData(cmd.clone()));
+                        self.content_area = ContentArea::Loading;
+                    }
+                    data::Get::TVEpisodes(_, _)
+                    | data::Get::TVSeasons(_)
+                    | data::Get::Directory { .. } => {
+                        self.item_list
+                            .breadcrumb
+                            .push(Message::GetData(cmd.clone()));
+                        self.content_area = ContentArea::Loading;
+                    }
+                    _ => {}
+                }
+                connection.send(cmd);
+            }
+            _ => {}
+        }
+        Command::none()
+    }
+
+    fn recompute_filter(&mut self) {
+        self.item_list.filtered_indices = self
             .item_list
             .raw_data
             .iter()
-            .filter(|i| i.label_contains(&self.item_list.filter))
             .enumerate()
-        {
-            self.item_list.filtered_count += 1;
-            //let i = i.clone();
-            if i >= self.item_list.start_offset as usize
-                && i <= (self.item_list.visible_count + self.item_list.start_offset) as usize
-            {
-                if self.item_list.virtual_list.contains_key(&i) {
-                    continue;
-                }
-                let pic = file.get_art_data(&self.kodi_status.server);
-                let pic = self.get_art(pic);
-                let mut item = file.into_listdata();
-                item.image = pic;
-                self.item_list.virtual_list.insert(i, item);
-            } else {
-                if self.item_list.virtual_list.contains_key(&i) {
-                    self.item_list.virtual_list.shift_remove(&i);
-                }
-            }
-        }
-        self.item_list.virtual_list.sort_keys()
+            .filter(|(_, item)| item.label_contains(&self.item_list.filter))
+            .map(|(i, _)| i)
+            .collect();
+        self.item_list.filtered_count = self.item_list.filtered_indices.len();
     }
 
-    // This entire thing might be better using worker oneshots/etc
-    // but iced 0.14 will have 'Straw' which is perfect for something like this
-    fn get_art(&self, pic: Pic) -> Arc<OnceLock<image::Handle>> {
-        if pic.url.is_none() {
-            return Arc::new(OnceLock::new());
+    fn update_virtual_list(&mut self) -> Command<Message> {
+        let start = self.item_list.start_offset as usize;
+        let end = (self.item_list.start_offset + self.item_list.visible_count) as usize;
+
+        let mut tasks = Vec::new();
+
+        // Remove items no longer visible
+        self.item_list
+            .virtual_list
+            .retain(|&i, _| i >= start && i <= end);
+
+        // Add newly visible items
+        for i in start..=end {
+            if i < self.item_list.filtered_indices.len()
+                && !self.item_list.virtual_list.contains_key(&i)
+            {
+                let raw_idx = self.item_list.filtered_indices[i];
+                let file = &self.item_list.raw_data[raw_idx];
+
+                let mut item = file.into_listdata();
+                let pic = file.get_art_data(&self.kodi_status.server);
+
+                // Immediate check for memory cache
+                if let Ok(cache) = DECODED_IMAGE_CACHE.lock() {
+                    if let Some(handle) = cache.get(&pic.namehash) {
+                        item.image = Some(handle.clone());
+                    }
+                }
+
+                // If not in cache, trigger background task
+                if item.image.is_none() {
+                    tasks.push(self.load_art_task(i, pic));
+                }
+
+                self.item_list.virtual_list.insert(i, item);
+            }
+        }
+        self.item_list.virtual_list.sort_keys();
+        Command::batch(tasks)
+    }
+
+    fn load_art_task(&self, index: usize, pic: Pic) -> Command<Message> {
+        if pic.url.is_none() && pic.namehash == 0 {
+            return Command::none();
         }
 
         let online = matches!(self.state, State::Connected(_, _));
-        let lock = Arc::new(OnceLock::new());
-        let c_lock = Arc::clone(&lock);
 
-        tokio::spawn(async move {
+        Command::future(async move {
+            let namehash = pic.namehash;
             let path = PROJECT_DIRS
                 .cache_dir()
-                .join(format!("{:0x}.jpg", pic.namehash));
-            // Check cache hit before semaphore for possible 'early return'
+                .join(format!("{:0x}.jpg", namehash));
+
             let res = match Krustmote::cache_hit(&path).await {
                 Ok(val) => Ok(val),
                 Err(_) => {
-                    if online {
+                    if online && pic.url.is_some() {
                         // semaphore limits it to 10 simultaneous DLs from svr
                         let _permit = SEM.acquire().await;
                         Krustmote::download_pic(pic, &path).await
                     } else {
-                        return;
+                        return Message::None;
                     }
                 }
             };
+
             if let Ok(res) = res {
-                let _ = c_lock.set(res);
+                if let Ok(mut cache) = DECODED_IMAGE_CACHE.lock() {
+                    cache.insert(namehash, res.clone());
+                }
+                Message::ImageLoaded { index, handle: res }
             } else if let Err(err) = res {
-                dbg!(err);
-            };
-        });
-        lock
+                error!("Art task error: {:?}", err);
+                Message::None
+            } else {
+                Message::None
+            }
+        })
     }
 
     async fn cache_hit(path: &Path) -> Result<image::Handle, Box<dyn Error + Send + Sync>> {

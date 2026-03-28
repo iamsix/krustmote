@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use tokio::fs;
 use tokio_rusqlite::Connection;
 use tokio_rusqlite::params;
+use tracing::{debug, error};
 
 use crate::koditypes::*;
 
@@ -38,17 +39,6 @@ pub enum SqlCommand {
         tvshowid: u32,
     },
 
-    GetMostRecentMovieDate {
-        sender: oneshot::Sender<String>,
-    },
-    GetMostRecentShowDate {
-        sender: oneshot::Sender<String>,
-    },
-    GetMostRecentEpisodeDate {
-        sender: oneshot::Sender<String>,
-        tvshowid: u32,
-    },
-
     InsertMovies(Vec<MovieListItem>), // bool clear_before_insert?
     InsertTVShows {
         tvshows: Vec<TVShowListItem>,
@@ -56,6 +46,24 @@ pub enum SqlCommand {
     }, // same
     InsertTVSeasons(Vec<TVSeasonListItem>, u32),
     InsertTVEpisodes(Vec<TVEpisodeListItem>, u32), // same
+
+    // ID-based sync operations
+    GetMovieIDs {
+        sender: oneshot::Sender<Vec<u32>>,
+    },
+    GetTVShowIDs {
+        sender: oneshot::Sender<Vec<u32>>,
+    },
+    GetTVEpisodeIDs {
+        sender: oneshot::Sender<Vec<u32>>,
+        tvshowid: u32,
+    },
+    DeleteMoviesByIDs(Vec<u32>),
+    DeleteTVShowsByIDs(Vec<u32>),
+    DeleteTVEpisodesByIDs {
+        ids: Vec<u32>,
+        tvshowid: u32,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -84,7 +92,7 @@ pub async fn connect(output: oneshot::Sender<SqlConnection>) {
         Ok(conn) => {
             let res = create_tables(&conn).await;
             if res.is_err() {
-                dbg!(res.err());
+                error!("Sqlite err creating tables: {:?}", res.err());
                 panic!("Sqlite err creating tables");
             }
 
@@ -95,7 +103,7 @@ pub async fn connect(output: oneshot::Sender<SqlConnection>) {
         }
         Err(err) => {
             // let _ = output;
-            dbg!(err);
+            error!("Failed to open database: {:?}", err);
         }
     }
 }
@@ -105,7 +113,7 @@ async fn handle_connection(mut conn: Connection, mut reciever: Receiver<SqlComma
         let cmd = reciever.select_next_some().await;
         let res = handle_command(cmd, &mut conn).await;
         if res.is_err() {
-            dbg!(res.err());
+            error!("Database command error: {:?}", res.err());
         }
     }
 }
@@ -116,7 +124,7 @@ async fn handle_command(cmd: SqlCommand, conn: &mut Connection) -> Result<()> {
 
         SqlCommand::AddOrEditServer(server) => {
             // NOTE might change this to NOT return the servers
-            dbg!(&server);
+            debug!(?server, "Add or Edit server");
             let res = conn
                 .call(move |conn| {
                     let q =
@@ -139,7 +147,9 @@ async fn handle_command(cmd: SqlCommand, conn: &mut Connection) -> Result<()> {
                 })
                 .await;
 
-            dbg!(res.err());
+            if let Err(err) = res {
+                error!("Failed to insert/replace server: {:?}", err);
+            }
             Ok(())
         }
 
@@ -175,16 +185,16 @@ async fn handle_command(cmd: SqlCommand, conn: &mut Connection) -> Result<()> {
             get_tv_show_item(conn, sender, tvshowid).await
         }
 
-        SqlCommand::GetMostRecentMovieDate { sender } => {
-            get_most_recent_movie_datestamp(conn, sender).await
+        SqlCommand::GetMovieIDs { sender } => get_movie_ids(conn, sender).await,
+        SqlCommand::GetTVShowIDs { sender } => get_tvshow_ids(conn, sender).await,
+        SqlCommand::GetTVEpisodeIDs { sender, tvshowid } => {
+            get_tvepisode_ids(conn, sender, tvshowid).await
         }
 
-        SqlCommand::GetMostRecentShowDate { sender } => {
-            get_most_recent_tvshow_datestamp(conn, sender).await
-        }
-
-        SqlCommand::GetMostRecentEpisodeDate { sender, tvshowid } => {
-            get_most_recent_episode_datestamp(conn, sender, tvshowid).await
+        SqlCommand::DeleteMoviesByIDs(ids) => delete_movies_by_ids(conn, ids).await,
+        SqlCommand::DeleteTVShowsByIDs(ids) => delete_tvshows_by_ids(conn, ids).await,
+        SqlCommand::DeleteTVEpisodesByIDs { ids, tvshowid } => {
+            delete_tvepisodes_by_ids(conn, ids, tvshowid).await
         }
     }
 }
@@ -231,25 +241,6 @@ async fn get_tv_show_item(
         .await?;
     let _ = sender.send(item_result);
 
-    Ok(())
-}
-
-// technically tvshowitem would work for this
-// but it's made for inputting tvshowid so it'd be a hack.
-async fn get_most_recent_tvshow_datestamp(
-    conn: &Connection,
-    sender: oneshot::Sender<String>,
-) -> Result<()> {
-    let last_date = conn
-        .call(|conn| {
-            let q = "SELECT dateadded FROM tvshowlist ORDER BY dateadded DESC LIMIT 1";
-            let date = conn.query_row(q, [], |row| row.get(0))?;
-            Ok::<String, tokio_rusqlite::Error>(date)
-        })
-        .await?;
-
-    // note if this fails the sender is cancelled.
-    let _ = sender.send(last_date);
     Ok(())
 }
 
@@ -326,26 +317,6 @@ async fn get_tv_seasons_list(
         .await?;
 
     let _ = sender.send(seasons_result);
-    Ok(())
-}
-
-async fn get_most_recent_episode_datestamp(
-    conn: &Connection,
-    sender: oneshot::Sender<String>,
-    tvshowid: u32,
-) -> Result<()> {
-    let last_date = conn
-        .call(move |conn| {
-            let q = "SELECT dateadded FROM tvepisodelist WHERE 
-                                tvshowid =?1
-                            ORDER BY dateadded DESC LIMIT 1";
-            let date = conn.query_row(q, [tvshowid], |row| row.get(0))?;
-            Ok::<String, tokio_rusqlite::Error>(date)
-        })
-        .await?;
-
-    // note if this fails the sender is cancelled.
-    let _ = sender.send(last_date);
     Ok(())
 }
 
@@ -459,25 +430,6 @@ async fn get_movie_list(
         .await?;
 
     let _ = sender.send(movies_result);
-    Ok(())
-}
-
-// I think it's easier to make a dedicated command for this
-// I never need a partial (1 in this case) list of movies otherwise afaik
-async fn get_most_recent_movie_datestamp(
-    conn: &Connection,
-    sender: oneshot::Sender<String>,
-) -> Result<()> {
-    let last_date = conn
-        .call(|conn| {
-            let q = "SELECT dateadded FROM movielist ORDER BY dateadded DESC LIMIT 1";
-            let date = conn.query_row(q, [], |row| row.get(0))?;
-            Ok::<String, tokio_rusqlite::Error>(date)
-        })
-        .await?;
-
-    // note if this fails the sender is cancelled.
-    let _ = sender.send(last_date);
     Ok(())
 }
 
@@ -695,7 +647,7 @@ async fn insert_tvseasons(
         .await;
 
     if let Err(err) = shows_result {
-        dbg!(&err);
+        error!("Failed to insert TV seasons: {:?}", err);
         // return Err(err);
     }
 
@@ -772,6 +724,125 @@ async fn insert_tvepisodes(
     })
     .await
     .context("Failed to insert episodes DB")?;
+
+    Ok(())
+}
+
+// ID-based sync operations
+async fn get_movie_ids(conn: &Connection, sender: oneshot::Sender<Vec<u32>>) -> Result<()> {
+    let ids = conn
+        .call(|conn| {
+            let q = "SELECT movieid FROM movielist";
+            let mut stmt = conn.prepare(q)?;
+            let ids = stmt
+                .query_map([], |row| row.get(0))?
+                .collect::<Result<Vec<u32>, rusqlite::Error>>()?;
+            Ok::<Vec<u32>, tokio_rusqlite::Error>(ids)
+        })
+        .await?;
+    let _ = sender.send(ids);
+    Ok(())
+}
+
+async fn get_tvshow_ids(conn: &Connection, sender: oneshot::Sender<Vec<u32>>) -> Result<()> {
+    let ids = conn
+        .call(|conn| {
+            let q = "SELECT tvshowid FROM tvshowlist";
+            let mut stmt = conn.prepare(q)?;
+            let ids = stmt
+                .query_map([], |row| row.get(0))?
+                .collect::<Result<Vec<u32>, rusqlite::Error>>()?;
+            Ok::<Vec<u32>, tokio_rusqlite::Error>(ids)
+        })
+        .await?;
+    let _ = sender.send(ids);
+    Ok(())
+}
+
+async fn get_tvepisode_ids(
+    conn: &Connection,
+    sender: oneshot::Sender<Vec<u32>>,
+    tvshowid: u32,
+) -> Result<()> {
+    let ids = conn
+        .call(move |conn| {
+            let q = "SELECT episodeid FROM tvepisodelist WHERE tvshowid = ?1";
+            let mut stmt = conn.prepare(q)?;
+            let ids = stmt
+                .query_map([tvshowid], |row| row.get(0))?
+                .collect::<Result<Vec<u32>, rusqlite::Error>>()?;
+            Ok::<Vec<u32>, tokio_rusqlite::Error>(ids)
+        })
+        .await?;
+    let _ = sender.send(ids);
+    Ok(())
+}
+
+async fn delete_movies_by_ids(conn: &Connection, ids: Vec<u32>) -> Result<()> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+
+    conn.call(move |conn| {
+        let placeholders = (0..ids.len()).map(|_| "?").collect::<Vec<_>>().join(",");
+        let q = format!("DELETE FROM movielist WHERE movieid IN ({})", placeholders);
+        let mut stmt = conn.prepare(&q)?;
+
+        let params: Vec<&dyn rusqlite::ToSql> =
+            ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+        stmt.execute(params.as_slice())?;
+        Ok::<_, tokio_rusqlite::Error>(())
+    })
+    .await?;
+
+    Ok(())
+}
+
+async fn delete_tvshows_by_ids(conn: &Connection, ids: Vec<u32>) -> Result<()> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+
+    conn.call(move |conn| {
+        let placeholders = (0..ids.len()).map(|_| "?").collect::<Vec<_>>().join(",");
+        let q = format!(
+            "DELETE FROM tvshowlist WHERE tvshowid IN ({})",
+            placeholders
+        );
+        let mut stmt = conn.prepare(&q)?;
+
+        let params: Vec<&dyn rusqlite::ToSql> =
+            ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+        stmt.execute(params.as_slice())?;
+        Ok::<_, tokio_rusqlite::Error>(())
+    })
+    .await?;
+
+    Ok(())
+}
+
+async fn delete_tvepisodes_by_ids(conn: &Connection, ids: Vec<u32>, tvshowid: u32) -> Result<()> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+
+    conn.call(move |conn| {
+        let placeholders = (0..ids.len()).map(|_| "?").collect::<Vec<_>>().join(",");
+        let q = format!(
+            "DELETE FROM tvepisodelist WHERE tvshowid = ? AND episodeid IN ({})",
+            placeholders
+        );
+        let mut stmt = conn.prepare(&q)?;
+
+        let mut params: Vec<&dyn rusqlite::ToSql> = vec![&tvshowid];
+        let id_params: Vec<&dyn rusqlite::ToSql> =
+            ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+        params.extend(id_params);
+
+        stmt.execute(params.as_slice())?;
+        Ok::<_, tokio_rusqlite::Error>(())
+    })
+    .await?;
 
     Ok(())
 }

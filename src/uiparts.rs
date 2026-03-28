@@ -221,13 +221,21 @@ pub(crate) fn top_bar<'a>(krustmote: &Krustmote) -> Element<'a, Message> {
         stack![
             text_input("Filter..", &krustmote.item_list.filter)
                 .on_input(Message::FilterFileList)
-                .id("Filter"),
-            row![
-                space::horizontal(),
+                .id("Filter")
+                .width(250)
+                .padding(iced::Padding {
+                    top: 5.0,
+                    right: 35.0,
+                    bottom: 5.0,
+                    left: 10.0
+                }), // Room for the X on the right
+            container(
                 button(" x ")
                     .on_press(Message::FilterFileList("".to_owned()))
-                    .style(themes::bare_button),
-            ]
+                    .style(themes::bare_button)
+            )
+            .width(Length::Fill)
+            .align_x(iced::alignment::Horizontal::Right)
         ]
     ])
     .into()
@@ -338,9 +346,8 @@ pub(crate) fn make_listitem(data: &'_ ListData) -> Button<'_, Message> {
     //    and there's no 'fling' anyway
     //
     // TODO: I should specify label heights here to ensure no line wrapping/etc
-    let image_data = data.image.get();
     Button::new(row![
-        if let Some(img) = image_data {
+        if let Some(img) = &data.image {
             container(image(img.clone()).height(45))
         } else {
             // Could use a Space here instead
@@ -354,7 +361,7 @@ pub(crate) fn make_listitem(data: &'_ ListData) -> Button<'_, Message> {
             text(" ")
         },
         column![
-            text(data.label.as_str()).size(14).height(19),
+            text(&*data.label).size(14).height(19),
             text("").size(10),
             row![
                 match &data.bottom_left {

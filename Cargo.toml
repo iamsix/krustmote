@@ -22,3 +22,6 @@ tokio-rusqlite = "0.7.0"
 fxhash = "0.2.1"
 indexmap = "2.12.1"
 directories-next = "2.0.0"
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
