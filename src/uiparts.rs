@@ -6,8 +6,8 @@ use iced::widget::stack;
 
 use iced::font::{Family, Font, Weight};
 use iced::widget::{
-    Button, Checkbox, Slider, Space, button, column, container, image, pick_list, row, rule,
-    scrollable, text, text_input,
+    Checkbox, Slider, Space, button, column, container, image, pick_list, row, rule, scrollable,
+    text, text_input,
 };
 
 use super::BLANK_IMAGE;
@@ -19,6 +19,7 @@ use crate::data;
 use crate::icons;
 use crate::koditypes::*;
 use crate::themes;
+use crate::widgets::listitem::ListItem;
 
 use chrono;
 
@@ -327,7 +328,7 @@ pub(crate) fn file_list<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> {
     .into()
 }
 
-pub(crate) fn make_listitem(data: &'_ ListData) -> Button<'_, Message> {
+pub(crate) fn make_listitem<'a>(data: &'a ListData) -> Element<'a, Message> {
     // Let's stretch the definition of a 'button'
     // ___________________________________________________________
     // | picture |  Main Label Information                       |
@@ -346,7 +347,7 @@ pub(crate) fn make_listitem(data: &'_ ListData) -> Button<'_, Message> {
     //    and there's no 'fling' anyway
     //
     // TODO: I should specify label heights here to ensure no line wrapping/etc
-    Button::new(row![
+    let inner_content = container(row![
         if let Some(img) = &data.image {
             container(image(img.clone()).height(45))
         } else {
@@ -376,10 +377,20 @@ pub(crate) fn make_listitem(data: &'_ ListData) -> Button<'_, Message> {
             ]
         ]
     ])
-    .on_press(data.on_click.clone())
+    .padding(iced::Padding {
+        top: 5.0,
+        bottom: 5.0,
+        left: 10.0,
+        right: 10.0, // This prevents the text from hitting the right edge/scrollbar
+    })
     .width(Length::Fill)
-    .height(ITEM_HEIGHT as f32)
-    .style(themes::listitem)
+    .height(ITEM_HEIGHT as f32);
+
+    let list_item = ListItem::new(inner_content)
+        .style(themes::listitem)
+        .on_press(data.on_click.clone());
+
+    list_item.into()
 }
 
 pub(crate) fn left_menu<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> {

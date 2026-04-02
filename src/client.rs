@@ -215,6 +215,7 @@ where
     for<'de> T: Deserialize<'de>,
 {
     let response: Value = client.request(method, params).await?;
+    debug!(?response, "Response for {}", method);
     Ok(serde_json::from_value(response[field].clone())?)
 }
 

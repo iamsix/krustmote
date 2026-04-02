@@ -14,16 +14,14 @@ use tokio::sync::Semaphore;
 
 use directories_next::ProjectDirs;
 use indexmap::IndexMap;
+use std::env;
 use std::error::Error;
 use std::fs as stdfs;
 use std::sync::Mutex;
 use std::sync::{Arc, LazyLock, OnceLock};
 use tokio;
 use tracing::{debug, error, info};
-use tracing_subscriber::Layer;
-use tracing_subscriber::filter::Targets;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 mod client;
 mod data;
@@ -33,6 +31,9 @@ mod koditypes;
 mod settingsui;
 mod themes;
 mod uiparts;
+mod widgets {
+    pub mod listitem;
+}
 
 use koditypes::*;
 
@@ -61,24 +62,28 @@ fn main() -> iced::Result {
         },
     );
 
-    // Setup rolling file appender
     let log_dir = PROJECT_DIRS.data_dir();
-    let file_appender = tracing_appender::rolling::daily(log_dir, "krustmote.log");
-    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+    let log_path = log_dir.join("krustmote.log");
+    let file = stdfs::File::create(log_path).expect("failed to create log file");
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file);
 
-    // Define which crates we want to hear from
-    let filter = Targets::new()
-        .with_target("krustmote", tracing::Level::DEBUG)
-        .with_target("jsonrpsee", tracing::Level::DEBUG);
+    let filter_str = match env::var("RUST_LOG").map(|s| s.to_lowercase()) {
+        Ok(s) if s == "debug" => "krustmote=debug,jsonrpsee=debug",
+        _ => "krustmote=info,jsonrpsee=info",
+    };
+
+    let filter = EnvFilter::new(filter_str);
 
     tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer().with_filter(filter.clone())) // Log to stdout
         .with(
-            tracing_subscriber::fmt::layer()
-                .with_ansi(false) // Disable colors in file logs
+            fmt::layer().with_filter(filter.clone()), // Stdout uses EnvFilter
+        )
+        .with(
+            fmt::layer()
+                .with_ansi(false)
                 .with_writer(non_blocking)
-                .with_filter(filter),
-        ) // Log to file
+                .with_filter(filter), // File also uses EnvFilter
+        )
         .init();
 
     let _ = BLANK_IMAGE.set(image::Handle::from_rgba(
