@@ -43,6 +43,14 @@ pub enum KodiCommand {
         player_id: u8,
         audio_index: u8,
     },
+    PlayerSetVideoStream {
+        player_id: u8,
+        video_index: u8,
+    },
+    PlayerSetTempo {
+        player_id: u8,
+        direction: &'static str,
+    },
     InputSendText(String),
 
     PlayerGetProperties,
@@ -223,9 +231,9 @@ pub struct PlayerProps {
     #[serde(deserialize_with = "treat_error_as_none")]
     pub currentsubtitle: Option<Subtitle>,
     pub subtitles: Vec<Subtitle>,
-    // #[serde(deserialize_with = "treat_error_as_none")]
-    // pub currentvideostream: VideoStream,
-    // pub videostreams: Vec<VideoStream>,
+    #[serde(deserialize_with = "treat_error_as_none")]
+    pub currentvideostream: Option<VideoStream>,
+    pub videostreams: Vec<VideoStream>,
     // playlistid: u8,
     // position: u8, //might rename playlist_position..
     // repeat: String //(could be enum?)
@@ -269,15 +277,25 @@ impl std::fmt::Display for AudioStream {
     }
 }
 
-// #[derive(Deserialize, Clone, Debug, Default)]
-// pub struct VideoStream {
-//     codec: String,
-//     height: u16,
-//     index: u8,
-//     language: String,
-//     name: String,
-//     width: u16,
-// }
+#[derive(Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct VideoStream {
+    codec: String,
+    height: u16,
+    pub index: u8,
+    language: String,
+    name: String,
+    width: u16,
+}
+
+impl std::fmt::Display for VideoStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "{} - {}x{} - {}",
+            self.index, self.width, self.height, self.codec
+        )
+    }
+}
 
 #[derive(Deserialize, Clone, Debug, Eq, PartialEq)]
 pub struct Subtitle {

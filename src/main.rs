@@ -128,7 +128,7 @@ enum Modals {
     None,
     Subtitles,
     RequestText,
-    _Video,
+    Video,
     Audio,
 }
 
@@ -183,6 +183,7 @@ enum Message {
     SubtitlePicked(Subtitle),
     SubtitleToggle(bool),
     AudioStreamPicked(AudioStream),
+    VideoStreamPicked(VideoStream),
     SendTextInput(String),
     ImageLoaded { index: usize, handle: image::Handle },
     None,
@@ -335,6 +336,17 @@ impl Krustmote {
                 return Command::perform(async { cmd }, move |c| Message::KodiReq(c));
             }
 
+            Message::VideoStreamPicked(val) => {
+                let cmd = KodiCommand::PlayerSetVideoStream {
+                    player_id: self
+                        .kodi_status
+                        .active_player_id
+                        .expect("Should be playing if this is called"),
+                    video_index: val.index,
+                };
+                return Command::perform(async { cmd }, move |c| Message::KodiReq(c));
+            }
+
             Message::SendTextInput(text) => {
                 self.send_text = text;
             }
@@ -448,6 +460,7 @@ impl Krustmote {
             Modals::Subtitles => Some(uiparts::make_subtitle_modal(self)),
             Modals::RequestText => Some(uiparts::request_text_modal(self)),
             Modals::Audio => Some(uiparts::make_audio_modal(self)),
+            Modals::Video => Some(uiparts::make_video_modal(self)),
             _ => None,
         };
 

@@ -102,6 +102,51 @@ pub(crate) fn make_audio_modal<'a>(
     .style(|_| container::Style::default().background(iced::Theme::Dracula.palette().background))
 }
 
+pub(crate) fn make_video_modal<'a>(
+    krustmote: &'a Krustmote,
+) -> iced::widget::Container<'a, Message> {
+    container(column![
+        row![
+            text("Video").height(40),
+            space::horizontal(),
+            button("x").on_press(Message::ShowModal(crate::Modals::None)),
+        ],
+        rule::horizontal(5),
+        pick_list(
+            &*krustmote.kodi_status.player_props.videostreams,
+            krustmote
+                .kodi_status
+                .player_props
+                .currentvideostream
+                .clone(),
+            Message::VideoStreamPicked
+        )
+        .placeholder("No Video")
+        .width(Length::Fill),
+        row![
+            button("-").on_press(Message::KodiReq(KodiCommand::PlayerSetTempo {
+                player_id: krustmote
+                    .kodi_status
+                    .active_player_id
+                    .expect("Should be playing if this is called"),
+                direction: "decrement",
+            })),
+            text(" Speed "),
+            button("+").on_press(Message::KodiReq(KodiCommand::PlayerSetTempo {
+                player_id: krustmote
+                    .kodi_status
+                    .active_player_id
+                    .expect("Should be playing if this is called"),
+                direction: "increment",
+            }))
+        ]
+        .align_y(iced::Alignment::Center),
+    ])
+    .width(500)
+    .padding(10)
+    .style(|_| container::Style::default().background(iced::Theme::Dracula.palette().background))
+}
+
 pub(crate) fn request_text_modal<'a>(
     krustmote: &'a Krustmote,
 ) -> iced::widget::Container<'a, Message> {
@@ -197,7 +242,9 @@ pub(crate) fn playing_bar<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> 
                         button(icons::hearing())
                             .on_press(Message::ShowModal(Modals::Audio))
                             .style(themes::bare_button),
-                        button(icons::videocam()).style(themes::bare_button),
+                        button(icons::videocam())
+                            .on_press(Message::ShowModal(Modals::Video))
+                            .style(themes::bare_button),
                     ],
                     Space::new().width(10).height(5),
                 ]
@@ -341,12 +388,16 @@ pub(crate) fn make_listitem<'a>(data: &'a ListData) -> Element<'a, Message> {
     //                          row! [bottom_left, space, bottom_right],
     //                         ]
     //     ]
-    // It seems pretty clear I'll have to make some kind of custom
-    //    RecyclerView type thing.
-    //    The button captures any attempt to touch-scroll.
-    //    and there's no 'fling' anyway
+
+    // TODO: "context menu" that appears on right click or long-press.
+    //       It's not an actual "menu" but instead switches inner_content to show the Main Label and buttons on the lower half of the container (see rightclick.md/gemini sesssion)
+    //       "Play", "Queue", "Queue next", "info" (maybe, since I don't have that info but could just hot-pull it?)
+    //       "mark as watched/unwatched" (for movies at least, maybe not for TV shows since that can be season/series/episode level?)
+    //       "Show on kodi" for folders (and shows/seasons if possible?)
+    //         - Note might need to deal with the on_press if there's buttons inside the ListItem thing
+    //         - ListData itself could have a context_buttons Vec<> full of labels/commands (need to make the IntoListData trait handle this)
     //
-    // TODO: I should specify label heights here to ensure no line wrapping/etc
+    // TODO: I should specify label heights here to ensure no line wrapping/etc (maybe look into text truncation)
     let inner_content = container(row![
         if let Some(img) = &data.image {
             container(image(img.clone()).height(45))
@@ -432,6 +483,7 @@ pub(crate) fn left_menu<'a>(krustmote: &'a Krustmote) -> Element<'a, Message> {
                 .width(Length::Fill)
                 .style(themes::bare_button)
                 .on_press(Message::ShowSettings),
+            // TODO: playlist? might belong as part of playing bar though
         ]
         .spacing(1)
         .padding(5)

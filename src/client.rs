@@ -384,6 +384,32 @@ async fn handle_kodi_command(
             Ok(Event::None)
         }
 
+        KodiCommand::PlayerSetVideoStream {
+            player_id,
+            video_index,
+        } => {
+            let _response: Value = client
+                .request(
+                    "Player.SetVideoStream",
+                    rpc_obj_params!("playerid" = player_id, "stream" = video_index),
+                )
+                .await?;
+            Ok(Event::None)
+        }
+
+        KodiCommand::PlayerSetTempo {
+            player_id,
+            direction,
+        } => {
+            let _response: Value = client
+                .request(
+                    "Player.SetTempo",
+                    rpc_obj_params!("playerid" = player_id, "tempo" = direction),
+                )
+                .await?;
+            Ok(Event::None)
+        }
+
         KodiCommand::ToggleMute => {
             let _response: Value = client
                 .request("Application.SetMute", rpc_obj_params!("mute" = "toggle"))
